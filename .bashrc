@@ -1,7 +1,6 @@
 # ---------------------------------------------------------------
 # Starship Prompt (스타쉽 프롬프트 활성화)
 # ---------------------------------------------------------------
-# 참고: 이 라인은 dev-up 함수보다 '먼저' 실행되어야 합니다.
 eval "$(starship init bash)"
 
 
@@ -13,26 +12,51 @@ eval "$(starship init bash)"
 function dev-up() {
     set -uo pipefail
 
-    # --- 로그 헬퍼 함수 ---
+    # 작업 요약을 저장할 배열
+    local task_summaries=()
+    
+    # --- 로그 헬퍼 함수 (시간 저장 로직) ---
     _log()  { printf "\n==> %s\n" "$*"; }
-    _ok()   { printf "  ✓ %s\n" "$*"; }
-    _skip() { printf "  ... %s (skipping)\n" "$*"; }
-    _fail() { printf "  ✗ %s (FAILED)\n" "$*"; }
+    # $1: 메시지, $2: 소요 시간(초)
+    _ok()   { 
+        printf "  ✓ %s\n" "$1" # 실시간 피드백 (시간 제외)
+        task_summaries+=("✓ $1: $2""s") # 요약 배열에 저장
+    }
+    _skip() { 
+        printf "  ... %s (skipping)\n" "$*" # 실시간 피드백
+        task_summaries+=("... $1: SKIPPED") # 요약 배열에 저장
+    }
+    # $1: 메시지, $2: 소요 시간(초)
+    _fail() { 
+        printf "  ✗ %s (FAILED)\n" "$1" # 실시간 피드백 (시간 제외)
+        task_summaries+=("✗ $1: $2""s (FAILED)") # 요약 배열에 저장
+    }
     _has()  { command -v "$1" >/dev/null 2>&1; }
 
-    # --- 실행 래퍼 함수 (pnpm, winget 제외) ---
+    # --- 실행 래퍼 함수 (수정 없음) ---
     _run() {
         local title="$1"; shift
         _log "$title"
+        
+        local start_time
+        local end_time
+        local duration
+        start_time=$(date +%s)
+        
         if "$@"; then
-            _ok "$title"
+            end_time=$(date +%s)
+            duration=$((end_time - start_time))
+            _ok "$title" "$duration"
         else
-            _fail "$title"
+            end_time=$(date +%s)
+            duration=$((end_time - start_time))
+            _fail "$title" "$duration"
         fi
     }
 
     # pnpm 경고를 추적하기 위한 플래그
     local pnpm_warning_detected=0
+    # 전체 시작 시간
     local start_ts
     start_ts=$(date +%s)
 
@@ -50,81 +74,89 @@ function dev-up() {
         _skip "Bun이 설치되어 있지 않습니다."
     fi
 
-    # --- 3. Python pip ---
-    if _has py; then
-        _run "Python pip 업그레이드 (via py)" py -m pip install --upgrade pip
-    elif _has python; then
-        _run "Python pip 업그레이드 (via python)" python -m pip install --upgrade pip
-    else
-        _skip "Python (pip)이 설치되어 있지 않습니다."
-    fi
-
-    # --- 4. uv ---
-    if _has py; then
-        _run "uv 업그레이드 (via py)" py -m pip install --upgrade uv
-    elif _has python; then
-        _run "uv 업그레이드 (via python)" python -m pip install --upgrade uv
-    else
-        _skip "uv (pip)가 설치되어 있지 않습니다."
-    fi
-
-    # --- 5. Rust ---
+    # --- 3. Rust ---
     if _has rustup; then
         _run "Rust Toolchain 업데이트" rustup update
     else
         _skip "rustup이 설치되어 있지 않습니다."
     fi
 
-    # --- 6. Corepack (pnpm) ---
+    # --- 4. Flutter ---
+    if _has flutter; then
+        _run "Flutter SDK 업그레이드" flutter upgrade
+    else
+        _skip "Flutter가 설치되어 있지 않습니다."
+    fi
+
+    # --- 5. Python Ecosystem (pip -> uv) ---
+    if _has py; then
+        _run "Python pip 업그레이드 (via py)" py -m pip install --upgrade pip
+        _run "uv 업그레이드 (via py)" py -m pip install --upgrade uv
+    elif _has python; then
+        _run "Python pip 업그레이드 (via python)" python -m pip install --upgrade pip
+        _run "uv 업그레이드 (via python)" python -m pip install --upgrade uv
+    else
+        _skip "Python (pip/uv)이 설치되어 있지 않습니다."
+    fi
+
+    # --- 6. Node.js Ecosystem (corepack) ---
     if _has corepack; then
         _run "Corepack (pnpm@latest 설정)" corepack use pnpm@latest
     else
         _skip "Corepack이 설치되어 있지 않습니다."
     fi
 
-    # --- 7. pnpm Global Packages (경고 감지 로직 추가) ---
+    # --- 7. pnpm Global Packages (수정 없음) ---
     if _has pnpm; then
         _log "pnpm 글로벌 패키지 업데이트"
+        local pnpm_start_time
+        pnpm_start_time=$(date +%s)
         
-        # 임시 로그 파일 생성
         local pnpm_log
         pnpm_log=$(mktemp)
-
-        # 'tee'로 실시간 출력과 파일 저장을 동시에 수행
+        
         if pnpm update -g --latest 2>&1 | tee "$pnpm_log"; then
-            _ok "pnpm 글로벌 패키지 업데이트"
+            local pnpm_end_time
+            pnpm_end_time=$(date +%s)
+            _ok "pnpm 글로벌 패키지 업데이트" "$((pnpm_end_time - pnpm_start_time))"
         else
-            _fail "pnpm 글로벌 패키지 업데이트"
+            local pnpm_end_time
+            pnpm_end_time=$(date +%s)
+            _fail "pnpm 글로벌 패키지 업데이트" "$((pnpm_end_time - pnpm_start_time))"
         fi
         
-        # 로그 파일에서 경고 문구 확인
         if grep -q "Ignored build scripts" "$pnpm_log"; then
-            pnpm_warning_detected=1 # 경고 플래그 설정
+            pnpm_warning_detected=1
         fi
         
-        # 임시 로그 파일 삭제
         rm "$pnpm_log"
         
     else
         _skip "pnpm이 설치되어 있지 않습니다."
     fi
 
-    # --- 8. Winget Packages (실패 처리 로직 수정) ---
+    # --- 8. System Apps (Winget) (수정 없음) ---
     if _has winget; then
         _log "Winget 패키지 업그레이드 (관리자 권한 필요할 수 있음)"
         
+        # GitHub CLI
         _log "Winget (GitHub CLI) 업그레이드"
+        local gh_start_time
+        gh_start_time=$(date +%s)
         if winget upgrade --id GitHub.cli --accept-source-agreements --accept-package-agreements; then
-            _ok "WingGeta (GitHub CLI) 업그레이드"
+            _ok "Winget (GitHub CLI) 업그레이드" "$(( $(date +%s) - gh_start_time ))"
         else
-            _ok "Winget (GitHub CLI) 업그레이드 (업데이트 없음)"
+            _ok "Winget (GitHub CLI) 업그레이드 (업데이트 없음)" "$(( $(date +%s) - gh_start_time ))"
         fi
         
+        # Starship
         _log "Winget (Starship) 업그레이드"
+        local starship_start_time
+        starship_start_time=$(date +%s)
         if winget upgrade --id Starship.Starship --accept-source-agreements --accept-package-agreements; then
-            _ok "Winget (Starship) 업그레이드"
+            _ok "Winget (Starship) 업그레이드" "$(( $(date +%s) - starship_start_time ))"
         else
-            _ok "Winget (Starship) 업그레이드 (업데이트 없음)"
+            _ok "Winget (Starship) 업그레이드 (업데이트 없음)" "$(( $(date +%s) - starship_start_time ))"
         fi
         
     else
@@ -132,7 +164,14 @@ function dev-up() {
     fi
 
 
-    # --- 최종 요약 ---
+    # --- 최종 요약 (수정됨) ---
+    _log "⏱️ 작업별 소요 시간 요약"
+    
+    # 저장된 요약본을 정렬된 목록으로 출력
+    for summary in "${task_summaries[@]}"; do
+        printf "  %s\n" "$summary"
+    done
+
     local end_ts
     end_ts=$(date +%s)
     _log "✅ 모든 작업 완료! (총 소요 시간: $((end_ts - start_ts))초)"
@@ -147,5 +186,5 @@ function dev-up() {
     fi
 
     # 셸 환경을 깨끗하게 유지하기 위해 헬퍼 함수들 삭제
-    unset -f _log _ok _skip _fail _has _run
+    unset -f _log _ok _skip _fail _has _run task_summaries
 }
