@@ -33,7 +33,7 @@ function dev-up() {
     }
     _has()  { command -v "$1" >/dev/null 2>&1; }
 
-    # --- 실행 래퍼 함수 (수정 없음) ---
+    # --- 실행 래퍼 함수 (pnpm, winget, choco 제외) ---
     _run() {
         local title="$1"; shift
         _log "$title"
@@ -106,7 +106,7 @@ function dev-up() {
         _skip "Corepack이 설치되어 있지 않습니다."
     fi
 
-    # --- 7. pnpm Global Packages (수정 없음) ---
+    # --- 7. pnpm Global Packages ---
     if _has pnpm; then
         _log "pnpm 글로벌 패키지 업데이트"
         local pnpm_start_time
@@ -135,11 +135,13 @@ function dev-up() {
         _skip "pnpm이 설치되어 있지 않습니다."
     fi
 
-    # --- 8. System Apps (Winget) (수정 없음) ---
+    # --- 8. System Apps (Winget & Choco) ---
+    # (관리자 권한으로 실행해야 할 수 있음)
+    
+    # Winget
     if _has winget; then
-        _log "Winget 패키지 업그레이드 (관리자 권한 필요할 수 있음)"
+        _log "Winget 패키지 업그레이드"
         
-        # GitHub CLI
         _log "Winget (GitHub CLI) 업그레이드"
         local gh_start_time
         gh_start_time=$(date +%s)
@@ -149,7 +151,6 @@ function dev-up() {
             _ok "Winget (GitHub CLI) 업그레이드 (업데이트 없음)" "$(( $(date +%s) - gh_start_time ))"
         fi
         
-        # Starship
         _log "Winget (Starship) 업그레이드"
         local starship_start_time
         starship_start_time=$(date +%s)
@@ -162,12 +163,37 @@ function dev-up() {
     else
         _skip "Winget이 설치되어 있지 않습니다."
     fi
+    
+    # Chocolatey
+    if _has choco; then
+        _log "Chocolatey 패키지 업그레이드"
+        
+        _log "Choco (Self) 업그레이드"
+        local choco_self_start_time
+        choco_self_start_time=$(date +%s)
+        if choco upgrade chocolatey -y; then
+             _ok "Choco (Self) 업그레이드" "$(( $(date +%s) - choco_self_start_time ))"
+        else
+             _ok "Choco (Self) 업그레이드 (업데이트 없음)" "$(( $(date +%s) - choco_self_start_time ))"
+        fi
+
+        _log "Choco (Dart SDK) 업그레이드"
+        local dart_start_time
+        dart_start_time=$(date +%s)
+        if choco upgrade dart-sdk -y; then
+             _ok "Choco (Dart SDK) 업그레이드" "$(( $(date +%s) - dart_start_time ))"
+        else
+             _ok "Choco (Dart SDK) 업그레이드 (업데이트 없음)" "$(( $(date +%s) - dart_start_time ))"
+        fi
+        
+    else
+        _skip "Chocolatey가 설치되어 있지 않습니다."
+    fi
 
 
-    # --- 최종 요약 (수정됨) ---
+    # --- 최종 요약 ---
     _log "⏱️ 작업별 소요 시간 요약"
     
-    # 저장된 요약본을 정렬된 목록으로 출력
     for summary in "${task_summaries[@]}"; do
         printf "  %s\n" "$summary"
     done
