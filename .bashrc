@@ -81,14 +81,23 @@ function dev-up() {
         _skip "rustup이 설치되어 있지 않습니다."
     fi
 
-    # --- 4. Flutter ---
+    # --- 4. Julia (juliaup) ---
+    if _has juliaup; then
+        _log "Julia Toolchain 업데이트"
+        _run "Juliaup 자체 업데이트" juliaup self update
+        _run "Julia 채널 업데이트" juliaup update
+    else
+        _skip "Juliaup이 설치되어 있지 않습니다."
+    fi
+
+    # --- 5. Flutter ---
     if _has flutter; then
         _run "Flutter SDK 업그레이드" flutter upgrade
     else
         _skip "Flutter가 설치되어 있지 않습니다."
     fi
 
-    # --- 5. Python Ecosystem (pip -> uv) ---
+    # --- 6. Python Ecosystem (pip -> uv) ---
     if _has py; then
         _run "Python pip 업그레이드 (via py)" py -m pip install --upgrade pip
         _run "uv 업그레이드 (via py)" py -m pip install --upgrade uv
@@ -99,14 +108,14 @@ function dev-up() {
         _skip "Python (pip/uv)이 설치되어 있지 않습니다."
     fi
 
-    # --- 6. Node.js Ecosystem (corepack) ---
+    # --- 7. Node.js Ecosystem (corepack) ---
     if _has corepack; then
         _run "Corepack (pnpm@latest 설정)" corepack use pnpm@latest
     else
         _skip "Corepack이 설치되어 있지 않습니다."
     fi
 
-    # --- 7. pnpm Global Packages ---
+    # --- 8. pnpm Global Packages ---
     if _has pnpm; then
         _log "pnpm 글로벌 패키지 업데이트"
         local pnpm_start_time
@@ -135,7 +144,7 @@ function dev-up() {
         _skip "pnpm이 설치되어 있지 않습니다."
     fi
 
-    # --- 8. System Apps (Winget & Choco) ---
+    # --- 9. System Apps (Winget & Choco) ---
     # (관리자 권한으로 실행해야 할 수 있음)
     
     # Winget
