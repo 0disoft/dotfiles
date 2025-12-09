@@ -69,7 +69,10 @@ function dev-up() {
 
     # --- 2. Bun ---
     if _has bun; then
-        _run "Bun 업그레이드" bun upgrade
+        # Bun 런타임(본체) 업그레이드
+        _run "Bun 런타임 업그레이드" bun upgrade
+        # Bun 글로벌 패키지(Biome, Vercel 등) 업데이트
+        _run "Bun 글로벌 패키지 업데이트" bun update -g
     else
         _skip "Bun이 설치되어 있지 않습니다."
     fi
@@ -97,15 +100,21 @@ function dev-up() {
         _skip "Flutter가 설치되어 있지 않습니다."
     fi
 
-    # --- 6. Python Ecosystem (pip -> uv) ---
+    # --- 6. Python Ecosystem (uv & pip) ---
+    # (1) uv: 엔진 업데이트 및 글로벌 도구 전체 업데이트
+    if _has uv; then
+        _run "uv 자체 업그레이드" uv self update
+        # 여기를 --all로 정확히 기재했습니다
+        _run "uv 글로벌 도구 전체 업그레이드" uv tool upgrade --all
+    else
+        _skip "uv가 설치되어 있지 않습니다."
+    fi
+
+    # (2) pip: 시스템 pip 업데이트 (레거시 호환용)
     if _has py; then
         _run "Python pip 업그레이드 (via py)" py -m pip install --upgrade pip
-        _run "uv 업그레이드 (via py)" py -m pip install --upgrade uv
     elif _has python; then
         _run "Python pip 업그레이드 (via python)" python -m pip install --upgrade pip
-        _run "uv 업그레이드 (via python)" python -m pip install --upgrade uv
-    else
-        _skip "Python (pip/uv)이 설치되어 있지 않습니다."
     fi
 
     # --- 7. Node.js Ecosystem (corepack) ---
@@ -215,9 +224,9 @@ function dev-up() {
     if [ $pnpm_warning_detected -eq 1 ]; then
         printf "\n"
         printf "  💡 **pnpm 경고 알림** 💡\n"
-        printf "     로그에서 \"Ignored build scripts\"가 감지되었습니다.\n"
-        printf "     터미널에 'pnpm approve-builds -g'를 직접 실행하여\n"
-        printf "     신뢰하는 패키지의 빌드 스크립트를 승인해 주세요.\n"
+        printf "    로그에서 \"Ignored build scripts\"가 감지되었습니다.\n"
+        printf "    터미널에 'pnpm approve-builds -g'를 직접 실행하여\n"
+        printf "    신뢰하는 패키지의 빌드 스크립트를 승인해 주세요.\n"
     fi
 
     # 셸 환경을 깨끗하게 유지하기 위해 헬퍼 함수들 삭제
