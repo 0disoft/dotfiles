@@ -1,9 +1,3 @@
-# ---------------------------------------------------------------
-# Starship Prompt (스타쉽 프롬프트 활성화)
-# ---------------------------------------------------------------
-eval "$(starship init bash)"
-
-
 #################################################################
 # 1-Click Developer Tool Updater Function (dev-up)
 # (dev-up 함수 정의)
@@ -56,6 +50,8 @@ function dev-up() {
 
     # pnpm 경고를 추적하기 위한 플래그
     local pnpm_warning_detected=0
+    # Bun postinstall 차단 감지 플래그
+    local bun_untrusted_detected=0
     # 전체 시작 시간
     local start_ts
     start_ts=$(date +%s)
@@ -71,8 +67,28 @@ function dev-up() {
     if _has bun; then
         # Bun 런타임(본체) 업그레이드
         _run "Bun 런타임 업그레이드" bun upgrade
+
         # Bun 글로벌 패키지(Biome, Vercel 등) 업데이트
         _run "Bun 글로벌 패키지 업데이트" bun update -g
+
+        # Bun 글로벌 업데이트 이후, 차단된 postinstall 스크립트 자동 처리
+        _log "Bun 전역 postinstall 스크립트 상태 확인"
+        local bun_untrusted_output
+        bun_untrusted_output="$(bun pm -g untrusted 2>/dev/null || true)"
+
+        if printf '%s\n' "$bun_untrusted_output" | grep -q "These dependencies had their lifecycle scripts blocked during install."; then
+            bun_untrusted_detected=1
+            printf "  ⚠️ Bun 전역에서 차단된 lifecycle 스크립트가 감지되었습니다.\n"
+            printf "%s\n" "$bun_untrusted_output"
+
+            # 모든 차단된 의존성의 스크립트를 신뢰하고 실행
+            # 주의: 전역 환경 전체에 적용되므로, 이 스크립트를 넣는다는 건
+            #       "내 글로벌 패키지들은 내가 관리한다"는 전제를 깔고 가는 셈이다.
+            _run "Bun 전역 postinstall 스크립트 신뢰 및 실행 (bun pm -g trust --all)" \
+                bun pm -g trust --all
+        else
+            _ok "Bun 전역 postinstall 스크립트 상태 (차단 없음)" 0
+        fi
     else
         _skip "Bun이 설치되어 있지 않습니다."
     fi
@@ -104,7 +120,6 @@ function dev-up() {
     # (1) uv: 엔진 업데이트 및 글로벌 도구 전체 업데이트
     if _has uv; then
         _run "uv 자체 업그레이드" uv self update
-        # 여기를 --all로 정확히 기재했습니다
         _run "uv 글로벌 도구 전체 업그레이드" uv tool upgrade --all
     else
         _skip "uv가 설치되어 있지 않습니다."
@@ -208,7 +223,6 @@ function dev-up() {
         _skip "Chocolatey가 설치되어 있지 않습니다."
     fi
 
-
     # --- 최종 요약 ---
     _log "⏱️ 작업별 소요 시간 요약"
     
@@ -223,10 +237,19 @@ function dev-up() {
     # pnpm 경고가 감지되었을 경우 알림 메시지 출력
     if [ $pnpm_warning_detected -eq 1 ]; then
         printf "\n"
-        printf "  💡 **pnpm 경고 알림** 💡\n"
+        printf "  💡 pnpm 경고 알림\n"
         printf "    로그에서 \"Ignored build scripts\"가 감지되었습니다.\n"
         printf "    터미널에 'pnpm approve-builds -g'를 직접 실행하여\n"
         printf "    신뢰하는 패키지의 빌드 스크립트를 승인해 주세요.\n"
+    fi
+
+    # Bun 전역 postinstall 차단이 있었던 경우 안내
+    if [ $bun_untrusted_detected -eq 1 ]; then
+        printf "\n"
+        printf "  💡 Bun 전역 postinstall 안내\n"
+        printf "    이번 실행에서 'bun pm -g trust --all'이 자동으로 실행되었습니다.\n"
+        printf "    전역 패키지 보안 정책을 더 세밀하게 관리하고 싶다면,\n"
+        printf "    개별 패키지 단위로 'bun pm -g trust <패키지명>'을 사용하는 것도 고려해 보세요.\n"
     fi
 
     # 셸 환경을 깨끗하게 유지하기 위해 헬퍼 함수들 삭제
