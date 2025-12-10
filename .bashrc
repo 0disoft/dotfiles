@@ -65,10 +65,10 @@ function dev-up() {
 
     # --- 2. Bun ---
     if _has bun; then
-        # Bun 런타임(본체) 업그레이드
+        # Bun 런타임 업그레이드
         _run "Bun 런타임 업그레이드" bun upgrade
 
-        # Bun 글로벌 패키지(Biome, Vercel 등) 업데이트
+        # Bun 글로벌 패키지 업데이트
         _run "Bun 글로벌 패키지 업데이트" bun update -g
 
         # Bun 글로벌 업데이트 이후, 차단된 postinstall 스크립트 자동 처리
@@ -82,8 +82,6 @@ function dev-up() {
             printf "%s\n" "$bun_untrusted_output"
 
             # 모든 차단된 의존성의 스크립트를 신뢰하고 실행
-            # 주의: 전역 환경 전체에 적용되므로, 이 스크립트를 넣는다는 건
-            #       "내 글로벌 패키지들은 내가 관리한다"는 전제를 깔고 가는 셈이다.
             _run "Bun 전역 postinstall 스크립트 신뢰 및 실행 (bun pm -g trust --all)" \
                 bun pm -g trust --all
         else
@@ -132,7 +130,20 @@ function dev-up() {
         _run "Python pip 업그레이드 (via python)" python -m pip install --upgrade pip
     fi
 
-    # --- 7. Node.js Ecosystem (corepack) ---
+    # --- 7. Node.js Ecosystem (npm & corepack) ---
+    
+    # (1) npm 업데이트
+    if _has npm; then
+        _log "npm 및 글로벌 패키지 업데이트"
+        # npm 자체를 최신 버전으로 업데이트 (npm install -g npm@latest)
+        _run "npm 자체 업데이트" npm install -g npm@latest
+        # 설치된 글로벌 패키지들을 업데이트 (npm update -g)
+        _run "npm 글로벌 패키지 업데이트" npm update -g
+    else
+        _skip "npm이 설치되어 있지 않습니다."
+    fi
+
+    # (2) Corepack 업데이트
     if _has corepack; then
         _run "Corepack (pnpm@latest 설정)" corepack use pnpm@latest
     else
@@ -169,7 +180,6 @@ function dev-up() {
     fi
 
     # --- 9. System Apps (Winget & Choco) ---
-    # (관리자 권한으로 실행해야 할 수 있음)
     
     # Winget
     if _has winget; then
