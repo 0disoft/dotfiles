@@ -49,6 +49,56 @@ function dev-up() {
     _run "Bun 런타임 업그레이드" bun upgrade
     _run "Bun 글로벌 패키지 업데이트" bun update -g
 
+    # Codex CLI 강제 최신 설치
+    # - npm이 있으면 npm registry 기준 최신 버전을 먼저 조회한 뒤 그 버전으로 설치
+    # - npm이 없거나 조회 실패면 latest 태그로 설치
+    local codex_target="latest"
+    if _has npm; then
+      local codex_latest
+      if _has timeout; then
+        codex_latest="$(timeout 5 npm view @openai/codex version 2>/dev/null | tr -d '\r\n' || true)"
+      else
+        codex_latest="$(npm view @openai/codex version 2>/dev/null | tr -d '\r\n' || true)"
+      fi
+      if printf '%s' "$codex_latest" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+        codex_target="$codex_latest"
+      fi
+    fi
+
+    _run "Codex CLI 강제 최신 설치 (@openai/codex@${codex_target})" bun install -g "@openai/codex@${codex_target}" --force
+
+    if _has codex; then
+      _run "Codex 버전 확인" codex --version
+    else
+      _skip "codex 실행 파일을 찾지 못했습니다. PATH를 확인하세요."
+    fi
+
+    # Gemini CLI 강제 최신 설치
+    # - npm이 있으면 npm registry 기준 최신 버전을 먼저 조회한 뒤 그 버전으로 설치
+    # - npm이 없거나 조회 실패면 latest 태그로 설치
+    local gemini_target="latest"
+    if _has npm; then
+      local gemini_latest
+      if _has timeout; then
+        gemini_latest="$(timeout 5 npm view @google/gemini-cli version 2>/dev/null | tr -d '\r\n' || true)"
+      else
+        gemini_latest="$(npm view @google/gemini-cli version 2>/dev/null | tr -d '\r\n' || true)"
+      fi
+      if printf '%s' "$gemini_latest" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+        gemini_target="$gemini_latest"
+      fi
+    fi
+
+    _run "Gemini CLI 강제 최신 설치 (@google/gemini-cli@${gemini_target})" bun install -g "@google/gemini-cli@${gemini_target}" --force
+
+    if _has gemini; then
+      _run "Gemini CLI 버전 확인" gemini --version
+    elif _has gemini-cli; then
+      _run "Gemini CLI 버전 확인" gemini-cli --version
+    else
+      _skip "Gemini CLI 실행 파일을 찾지 못했습니다. PATH를 확인하세요."
+    fi
+
     _log "Bun 전역 postinstall 스크립트 상태 확인"
     local bun_untrusted_output
     bun_untrusted_output="$(bun pm -g untrusted 2>/dev/null || true)"
@@ -89,13 +139,13 @@ function dev-up() {
       # untrusted에 실제로 있는 것만 골라서 trust
       local -a bun_to_trust=()
       for p in "${BUN_TRUST_ALLOWLIST_UNIQ[@]}"; do
-        if printf '%s\n' "$bun_untrusted_output" | grep -Fq "\\node_modules\\${p}"; then
+        if printf '%s\n' "$bun_untrusted_output" | grep -Eq "(\\\\|/)node_modules(\\\\|/)${p}(\\\\|/)"; then
           bun_to_trust+=("$p")
         fi
       done
 
       # node-pty는 자동 trust에서 제외
-      if printf '%s\n' "$bun_untrusted_output" | grep -Fq "\\node_modules\\${BUN_TRUST_SKIP_PKG}"; then
+      if printf '%s\n' "$bun_untrusted_output" | grep -Eq "(\\\\|/)node_modules(\\\\|/)${BUN_TRUST_SKIP_PKG}(\\\\|/)"; then
         printf "  ... %s는 자동 trust에서 제외했습니다. 필요할 때만 수동으로 처리하세요.\n" "$BUN_TRUST_SKIP_PKG"
       fi
 
@@ -111,6 +161,7 @@ function dev-up() {
   else
     _skip "Bun이 설치되어 있지 않습니다."
   fi
+
 
   # 3. Rust
   if _has rustup; then
