@@ -5,27 +5,41 @@ dev-up 한 줄로 업데이트 체인을 굴리고, 마지막에 성공 실패�
 
 ## 주요 기능
 
-- Bun
-  - 런타임 업데이트: bun upgrade
-  - 전역 패키지 업데이트: bun update -g
-  - codex, gemini-cli 최신 강제 설치
-  - bun 전역 postinstall 차단 감지 후 allowlist 방식으로만 trust 시도
-- Node.js
-  - npm 자체 업데이트: npm install -g npm@latest
-  - npm 전역 패키지 업데이트는 7일에 한 번만 자동 실행
-  - Corepack으로 pnpm 최신 지정
-  - pnpm 전역 패키지 업데이트
-- Rust: rustup update
-- Python
-  - pip 업데이트
-  - uv 업데이트는 설치 방식에 따라 자동 분기
-- Deno, Flutter, Julia: 각 런타임 및 SDK 업데이트
-- Windows 시스템
-  - Winget으로 GitHub CLI, Starship 업데이트
-  - Chocolatey 패키지 업데이트
-- 결과 리포트
-  - 작업별 소요 시간, 성공 실패 요약
-  - 이번 실행에서 버전이 바뀐 항목만 별도 목록으로 출력
+* 설치된 도구만 자동 감지해서, 있는 것만 업데이트합니다
+* 작업별 소요 시간과 성공 실패를 요약합니다
+* 이번 실행에서 버전이 바뀐 항목만 따로 모아서 보여줍니다
+
+업데이트 대상 요약
+
+* Bun
+
+  * bun upgrade
+  * bun update -g
+  * codex, gemini-cli 최신 보장 설치
+  * bun 전역 postinstall 차단 감지 후 allowlist 방식 trust
+* Node.js
+
+  * npm 자체 업데이트
+  * npm 전역 업데이트는 7일에 한 번만 자동 실행
+  * Corepack으로 pnpm 최신 지정
+  * pnpm 전역 패키지 업데이트
+* Rust: rustup update
+* Python: pip 업데이트, uv 업데이트는 설치 방식에 따라 자동 분기
+* Deno, Flutter, Julia: 각 런타임 및 SDK 업데이트
+* Windows 시스템: Winget, Chocolatey 업데이트
+
+## 업데이트 철학
+
+전역 업데이트는 빠르고 편해야 합니다.
+하지만 한 번의 빌드 실패가 전체 체인을 망가뜨리면 자동화가 아니라 폭탄이 됩니다.
+
+그래서 Dev-Up은 아래를 지킵니다.
+
+* bun trust all 자동 실행은 하지 않습니다
+* bun은 allowlist 방식으로만 trust를 시도합니다
+* node-pty는 자동 trust에서 제외합니다
+* uv는 설치 방식이 섞였을 때를 대비해 업그레이드 경로를 분기합니다
+* npm 전역 업데이트는 무거워서 7일 주기로 제한합니다
 
 ## 설치 및 적용 방법
 
@@ -39,15 +53,10 @@ dev-up 한 줄로 업데이트 체인을 굴리고, 마지막에 성공 실패�
 
 2. 스크립트 등록
 
-    파일의 맨 아래쪽에 dev-up 함수 전체 코드를 붙여넣습니다.
+    파일 맨 아래에 dev-up 함수 전체 코드를 붙여넣습니다.
     Starship 같은 프롬프트 설정이 있다면 그 아래에 배치하는 것을 권장합니다.
 
-3. 변경 사항 저장
-
-    - Ctrl + O 저장 후 Enter
-    - Ctrl + X 나가기
-
-4. 설정 적용
+3. 적용
 
     ```plaintext
     source ~/.bashrc
@@ -59,63 +68,82 @@ dev-up 한 줄로 업데이트 체인을 굴리고, 마지막에 성공 실패�
 dev-up
 ```
 
+## codex, gemini-cli 최신 보장 동작
+
+* npm이 있으면 npm view로 최신 버전 번호를 조회합니다
+* 이미 같은 버전이 설치되어 있으면 설치를 건너뜁니다
+* npm이 없거나 조회가 실패하면 latest로 설치합니다
+* 정말 재설치를 강제로 하고 싶을 때만 옵션으로 force를 켤 수 있습니다
+
 ## 옵션 환경변수
 
-필요할 때만 더 강하게 돌릴 수 있습니다.
+필요할 때만 더 강하게, 더 자주 돌릴 수 있습니다.
 
-### npm 전역 업데이트
+### npm 전역 업데이트 주기
 
-- 기본 동작: 7일에 한 번만 npm 전역 업데이트 실행
-- 지금 바로 강제 실행
+* 기본 동작: 7일에 한 번만 npm update -g 실행
+* 지금 바로 강제 실행
 
 ```plaintext
 DEV_UP_NPM_GLOBAL_FORCE=1 dev-up
 ```
 
-- 주기 변경
+* 주기 변경
 
 ```plaintext
 DEV_UP_NPM_GLOBAL_INTERVAL_DAYS=3 dev-up
 ```
 
-### bun 전역 패키지 최신 강제
+### npm 전역 업데이트 상태 파일
 
-- bun 전역에 설치된 모든 패키지를 최신으로 강제 설치
+주기 관리는 로컬 상태 파일로 기록됩니다.
+
+* 기본 폴더: HOME/.cache/dev-up
+* 기본 파일: HOME/.cache/dev-up/npm-global-update.ts
+* 이 파일을 삭제하면 다음 실행에서 npm 전역 업데이트가 다시 실행됩니다
+* 상태 폴더를 바꾸고 싶으면
+
+```plaintext
+DEV_UP_STATE_DIR="$HOME/.cache/my-dev-up" dev-up
+```
+
+### bun 전역 패키지 전체 최신 강제
+
+기본 동작은 codex와 gemini-cli만 최신 보장을 합니다.
+bun 전역에 설치된 모든 패키지를 최신으로 강제하려면 아래 옵션을 켭니다.
+
+* bun 전역 전체 최신 강제
 
 ```plaintext
 DEV_UP_BUN_FORCE_LATEST_ALL=1 dev-up
 ```
 
-- bun 캐시를 비우고 최신 해석을 더 강하게
+* 캐시까지 비우고 더 강하게
 
 ```plaintext
 DEV_UP_BUN_FORCE_LATEST_ALL=1 DEV_UP_BUN_FORCE_LATEST_COLD=1 dev-up
 ```
 
-- 가장 확실하게 하고 싶을 때
-  - npm view로 최신 버전 번호를 받아서 그 버전으로 설치합니다
-  - 정확도는 높고, 속도는 느릴 수 있습니다
+* 버전 번호를 npm view로 고정해서 더 확실하게
+
+  * 정확도는 높고, 느려질 수 있습니다
 
 ```plaintext
 DEV_UP_BUN_FORCE_LATEST_ALL=1 DEV_UP_BUN_FORCE_LATEST_NPM=1 dev-up
 ```
 
-### codex, gemini-cli 최신 강제
+### codex, gemini-cli 재설치 강제
 
-- codex와 gemini-cli는 기본 동작에서도 최신 강제 설치를 수행합니다
-- npm이 있으면 npm view로 최신 버전 번호를 조회해 그 버전으로 설치합니다
-- npm이 없거나 조회가 실패하면 latest로 설치합니다
+이미 최신이어도 다시 설치하고 싶을 때만 사용합니다.
 
-## npm 전역 업데이트가 7일 주기인 이유
+```plaintext
+DEV_UP_BUN_FORCE_REINSTALL=1 dev-up
+```
 
-npm update -g는 전역 패키지가 많을수록 매우 무거워집니다.
-한 번에 수백 개가 바뀌면 몇 분이 걸릴 수 있습니다.
-그래서 Dev-Up은 기본 동작에서 7일에 한 번만 실행합니다.
+## npm 전역 업데이트가 느린 이유
 
-주기 관리는 로컬 상태 파일로 기록됩니다.
-
-- 기본 경로: HOME/.cache/dev-up/npm-global-update.ts
-- 이 파일을 삭제하면 다음 실행에서 다시 npm 전역 업데이트가 수행됩니다
+npm update -g는 전역 패키지 수가 많을수록 매우 무거워집니다.
+한 번에 수백 개가 바뀌면 몇 분이 걸릴 수 있어, Dev-Up은 기본값을 7일 주기로 제한합니다.
 
 ## 실행 예시
 
@@ -126,56 +154,48 @@ npm update -g는 전역 패키지가 많을수록 매우 무거워집니다.
 ==> Bun 글로벌 패키지 업데이트
   ✓ Bun 글로벌 패키지 업데이트
 
-==> Codex CLI 강제 최신 설치 (@openai/codex@0.71.0)
-  ✓ Codex CLI 강제 최신 설치
+==> Codex CLI 최신 확인 (이미 0.69.0)
+  ✓ Codex CLI 최신 확인 (이미 0.69.0)
 
-==> Gemini CLI 강제 최신 설치 (@google/gemini-cli@0.4.2)
-  ✓ Gemini CLI 강제 최신 설치
-
-==> Bun 전역 postinstall 스크립트 상태 확인
-  ⚠️ Bun 전역에서 차단된 lifecycle 스크립트가 감지되었습니다.
-  ... node-pty는 자동 trust에서 제외했습니다. 필요할 때만 수동으로 처리하세요.
-  ... 자동 trust 후보(현재 전역 패키지 기준): esbuild workerd sharp
-  ✓ Bun 전역 postinstall 신뢰 및 실행 (allowlist)
+==> Gemini CLI 설치 (@google/gemini-cli@0.4.2)
+  ✓ Gemini CLI 설치 (@google/gemini-cli@0.4.2)
 
 ⏱️ 작업별 소요 시간 요약
   ✓ Bun 런타임 업그레이드: 1s
   ✓ Bun 글로벌 패키지 업데이트: 4s
-  ✓ Codex CLI 강제 최신 설치: 3s
-  ✓ Gemini CLI 강제 최신 설치: 2s
-  ✓ Bun 전역 postinstall 신뢰 및 실행 (allowlist): 3s
+  ✓ Codex CLI 최신 확인 (이미 0.69.0): 0s
+  ✓ Gemini CLI 설치 (@google/gemini-cli@0.4.2): 2s
 
-✅ 모든 작업 완료! (총 소요 시간: 20초)
+✅ 모든 작업 완료! (총 소요 시간: 12초)
 
 ==> ⬆️ 이번 실행에서 버전이 바뀐 것들
   [tool] npm 10.9.0 -> 10.9.1
-  [bun] codex 0.66.0 -> 0.71.0
-  [bun] gemini 0.3.1 -> 0.4.2
+  [bun] @google/gemini-cli 0.4.1 -> 0.4.2
 ```
 
 ## 주의 사항
 
-- 관리자 권한
-  - Winget이나 Chocolatey 업데이트는 관리자 권한이 필요할 수 있습니다
-  - 권한 오류가 나면 Git Bash를 관리자 권한으로 실행하세요
+* 관리자 권한
 
-- pnpm 경고
-  - 로그에서 Ignored build scripts가 감지되면 pnpm approve-builds -g 실행 안내가 출력됩니다
+  * Winget이나 Chocolatey 업데이트는 관리자 권한이 필요할 수 있습니다
+* pnpm 경고
 
-- bun 전역 postinstall
-  - Dev-Up은 trust all을 자동 실행하지 않습니다
-  - allowlist에 포함된 패키지만 trust를 시도합니다
+  * Ignored build scripts 경고가 감지되면 pnpm approve-builds -g 실행 안내가 출력됩니다
+* bun 전역 postinstall
 
-- codex, gemini 실행 파일을 못 찾는 경우
-  - 설치는 됐는데 실행이 안 되면 PATH 우선순위 문제일 수 있습니다
-  - command -v codex, command -v gemini로 실제 경로를 확인하세요
+  * trust all은 자동 실행하지 않습니다
+  * allowlist에 포함된 패키지만 trust를 시도합니다
+* 실행 파일 경로 충돌
+
+  * 전역과 로컬이 같이 있을 때는 PATH 우선순위 때문에 “다른 버전이 실행”될 수 있습니다
+  * 프로젝트에서는 bunx 또는 bun run으로 로컬 실행을 고정하는 것을 권장합니다
 
 ## bun allowlist 규칙
 
 Dev-Up은 bun pm ls -g 결과를 보고 allowlist를 구성합니다.
 
-- wrangler 전역 사용 시: esbuild, workerd trust 후보에 포함
-- vercel 전역 사용 시: esbuild, sharp trust 후보에 포함
-- node-pty: 자동 trust 제외
+* wrangler 전역 사용 시: esbuild, workerd trust 후보에 포함
+* vercel 전역 사용 시: esbuild, sharp trust 후보에 포함
+* node-pty: 자동 trust 제외
 
-원하는 경우 allowlist 규칙은 dev-up 함수 내부에서 쉽게 수정할 수 있습니다.
+원하는 경우 allowlist 규칙은 dev-up 함수 내부에서 수정할 수 있습니다.

@@ -102,16 +102,77 @@ function dev-up() {
     printf '%s' "$now" > "${sd}/npm-global-update.ts" 2>/dev/null || true
   }
 
+  _npm_view_version() {
+    local pkg="$1"
+    local out=""
+
+    if ! _has npm; then
+      printf ""
+      return 0
+    fi
+
+    if _has_timeout_gnu; then
+      out="$(timeout 5 npm view "$pkg" version 2>/dev/null | tr -d '\r\n' || true)"
+    else
+      out="$(npm view "$pkg" version 2>/dev/null | tr -d '\r\n' || true)"
+    fi
+
+    if printf '%s' "$out" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+      printf '%s' "$out"
+    else
+      printf ""
+    fi
+  }
+
   _bun_global_node_modules() {
     local bin_g
     bin_g="$(bun pm bin -g 2>/dev/null | tr -d '\r\n' || true)"
+
     if [ -n "$bin_g" ]; then
-      local bun_home
-      bun_home="$(dirname "$bin_g")"
-      printf '%s/install/global/node_modules\n' "$bun_home"
+      local bun_root
+      bun_root="$(dirname "$bin_g")"
+      printf '%s/install/global/node_modules\n' "$bun_root"
       return 0
     fi
+
     printf '%s/.bun/install/global/node_modules\n' "$HOME"
+  }
+
+  _bun_global_pkg_version() {
+    local pkg="$1"
+    local nm pj line ver
+
+    nm="$(_bun_global_node_modules)"
+    pj="${nm}/${pkg}/package.json"
+
+    if [ ! -f "$pj" ]; then
+      printf ""
+      return 0
+    fi
+
+    line="$(grep -m1 "\"version\"" "$pj" 2>/dev/null || true)"
+    ver="$(printf '%s\n' "$line" | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)"
+    printf '%s' "$ver"
+  }
+
+  _ensure_bun_global_pinned() {
+    local label="$1"
+    local pkg="$2"
+    local target="$3"
+
+    local installed
+    installed="$(_bun_global_pkg_version "$pkg")"
+
+    if [ -n "$installed" ] && [ "$installed" = "$target" ]; then
+      _ok "${label} 최신 확인 (이미 ${installed})" 0
+      return 0
+    fi
+
+    if [ "${DEV_UP_BUN_FORCE_REINSTALL:-0}" -eq 1 ]; then
+      _run "${label} 설치 (${pkg}@${target}, force)" bun install -g "${pkg}@${target}" --force
+    else
+      _run "${label} 설치 (${pkg}@${target})" bun install -g "${pkg}@${target}"
+    fi
   }
 
   _bun_list_globals() {
@@ -211,56 +272,46 @@ function dev-up() {
 
     _run "Bun 글로벌 패키지 업데이트" bun update -g
 
-    # codex, gemini는 항상 최신 강제
-    # 최신 판정이 꼬일 때를 대비해서 npm이 있으면 버전 번호를 박아서 설치
-    local codex_before codex_after codex_target codex_latest
-    codex_before=""
-    if _has codex; then codex_before="$(_ver1 codex --version)"; fi
-
+    # Codex CLI 최신 보장, 이미 최신이면 스킵
+    local codex_target codex_latest
     codex_target="latest"
-    if _has npm; then
-      if _has_timeout_gnu; then
-        codex_latest="$(timeout 5 npm view @openai/codex version 2>/dev/null | tr -d '\r\n' || true)"
-      else
-        codex_latest="$(npm view @openai/codex version 2>/dev/null | tr -d '\r\n' || true)"
-      fi
-      if printf '%s' "$codex_latest" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
-        codex_target="$codex_latest"
-      fi
+    codex_latest="$(_npm_view_version "@openai/codex")"
+    if [ -n "$codex_latest" ]; then
+      codex_target="$codex_latest"
+      _ensure_bun_global_pinned "Codex CLI" "@openai/codex" "$codex_target"
+    else
+      _run "Codex CLI 설치 (@openai/codex@latest)" bun install -g "@openai/codex@latest"
     fi
 
-    _run "Codex CLI 강제 최신 설치 (@openai/codex@${codex_target})" bun install -g "@openai/codex@${codex_target}" --force
-    codex_after=""
-    if _has codex; then codex_after="$(_ver1 codex --version)"; fi
-    _record_change "[bun]" "codex" "$codex_before" "$codex_after"
-
-    local gemini_before gemini_after gemini_target gemini_latest
-    gemini_before=""
-    if _has gemini; then gemini_before="$(_ver1 gemini --version)"; fi
-    if [ -z "$gemini_before" ] && _has gemini-cli; then gemini_before="$(_ver1 gemini-cli --version)"; fi
-
+    # Gemini CLI 최신 보장, 이미 최신이면 스킵
+    local gemini_target gemini_latest
     gemini_target="latest"
-    if _has npm; then
-      if _has_timeout_gnu; then
-        gemini_latest="$(timeout 5 npm view @google/gemini-cli version 2>/dev/null | tr -d '\r\n' || true)"
-      else
-        gemini_latest="$(npm view @google/gemini-cli version 2>/dev/null | tr -d '\r\n' || true)"
-      fi
-      if printf '%s' "$gemini_latest" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
-        gemini_target="$gemini_latest"
-      fi
+    gemini_latest="$(_npm_view_version "@google/gemini-cli")"
+    if [ -n "$gemini_latest" ]; then
+      gemini_target="$gemini_latest"
+      _ensure_bun_global_pinned "Gemini CLI" "@google/gemini-cli" "$gemini_target"
+    else
+      _run "Gemini CLI 설치 (@google/gemini-cli@latest)" bun install -g "@google/gemini-cli@latest"
     fi
 
-    _run "Gemini CLI 강제 최신 설치 (@google/gemini-cli@${gemini_target})" bun install -g "@google/gemini-cli@${gemini_target}" --force
-    gemini_after=""
-    if _has gemini; then gemini_after="$(_ver1 gemini --version)"; fi
-    if [ -z "$gemini_after" ] && _has gemini-cli; then gemini_after="$(_ver1 gemini-cli --version)"; fi
-    _record_change "[bun]" "gemini" "$gemini_before" "$gemini_after"
+    # 설치 확인
+    if _has codex; then
+      _run "Codex 버전 확인" codex --version
+    else
+      _skip "codex 실행 파일을 찾지 못했습니다. PATH를 확인하세요."
+    fi
 
-    # bun 전역 전체를 최신으로 강제하고 싶으면 아래 플래그를 켜서 실행
+    if _has gemini; then
+      _run "Gemini CLI 버전 확인" gemini --version
+    elif _has gemini-cli; then
+      _run "Gemini CLI 버전 확인" gemini-cli --version
+    else
+      _skip "Gemini CLI 실행 파일을 찾지 못했습니다. PATH를 확인하세요."
+    fi
+
+    # bun 전역 전체 최신 강제
+    # 실행 시에만 켜기
     # DEV_UP_BUN_FORCE_LATEST_ALL=1 dev-up
-    # DEV_UP_BUN_FORCE_LATEST_COLD=1 이면 캐시를 비우고 시작
-    # DEV_UP_BUN_FORCE_LATEST_NPM=1 이면 npm view로 버전 번호를 박아서 설치
     if [ "${DEV_UP_BUN_FORCE_LATEST_ALL:-0}" -eq 1 ]; then
       local bun_global_nm
       bun_global_nm="$(_bun_global_node_modules)"
@@ -290,20 +341,15 @@ function dev-up() {
       while IFS= read -r pkg; do
         [ -n "$pkg" ] || continue
 
-        if [ "${DEV_UP_BUN_FORCE_LATEST_NPM:-0}" -eq 1 ] && _has npm; then
-          if _has_timeout_gnu; then
-            latest="$(timeout 5 npm view "$pkg" version 2>/dev/null | tr -d '\r\n' || true)"
+        if [ "${DEV_UP_BUN_FORCE_LATEST_NPM:-0}" -eq 1 ]; then
+          latest="$(_npm_view_version "$pkg")"
+          if [ -n "$latest" ]; then
+            bun install -g "${pkg}@${latest}" >/dev/null 2>&1 || force_ok=0
           else
-            latest="$(npm view "$pkg" version 2>/dev/null | tr -d '\r\n' || true)"
-          fi
-
-          if printf '%s' "$latest" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
-            bun install -g "${pkg}@${latest}" --force >/dev/null 2>&1 || force_ok=0
-          else
-            bun install -g "${pkg}@latest" --force >/dev/null 2>&1 || force_ok=0
+            bun install -g "${pkg}@latest" >/dev/null 2>&1 || force_ok=0
           fi
         else
-          bun install -g "${pkg}@latest" --force >/dev/null 2>&1 || force_ok=0
+          bun install -g "${pkg}@latest" >/dev/null 2>&1 || force_ok=0
         fi
       done < <(_bun_list_globals "$bun_global_nm" | sort)
 
@@ -497,9 +543,6 @@ function dev-up() {
   if _has pnpm; then
     _log "pnpm 글로벌 패키지 업데이트"
 
-    local pnpm_before pnpm_after
-    pnpm_before="$(_ver1 pnpm --version)"
-
     local pnpm_start_time
     pnpm_start_time=$(date +%s)
 
@@ -517,9 +560,6 @@ function dev-up() {
     fi
 
     rm -f "$pnpm_log"
-
-    pnpm_after="$(_ver1 pnpm --version)"
-    _record_change "[tool]" "pnpm" "$pnpm_before" "$pnpm_after"
   else
     _skip "pnpm이 설치되어 있지 않습니다."
   fi
@@ -527,10 +567,6 @@ function dev-up() {
   # 9. Winget
   if _has winget; then
     _log "Winget 패키지 업그레이드"
-
-    local gh_before gh_after
-    gh_before=""
-    if _has gh; then gh_before="$(_ver1 gh --version)"; fi
 
     _log "Winget (GitHub CLI) 업그레이드"
     local gh_start_time
@@ -541,14 +577,6 @@ function dev-up() {
       _ok "Winget (GitHub CLI) 업그레이드 (업데이트 없음)" "$(( $(date +%s) - gh_start_time ))"
     fi
 
-    gh_after=""
-    if _has gh; then gh_after="$(_ver1 gh --version)"; fi
-    _record_change "[tool]" "gh" "$gh_before" "$gh_after"
-
-    local starship_before starship_after
-    starship_before=""
-    if _has starship; then starship_before="$(_ver1 starship --version)"; fi
-
     _log "Winget (Starship) 업그레이드"
     local starship_start_time
     starship_start_time=$(date +%s)
@@ -557,10 +585,6 @@ function dev-up() {
     else
       _ok "Winget (Starship) 업그레이드 (업데이트 없음)" "$(( $(date +%s) - starship_start_time ))"
     fi
-
-    starship_after=""
-    if _has starship; then starship_after="$(_ver1 starship --version)"; fi
-    _record_change "[tool]" "starship" "$starship_before" "$starship_after"
   else
     _skip "Winget이 설치되어 있지 않습니다."
   fi
@@ -628,7 +652,8 @@ function dev-up() {
   fi
 
   unset -f _log _ok _skip _fail _has _has_timeout_gnu _run _ver1 _record_change
-  unset -f _state_dir _npm_global_update_due _npm_global_update_stamp
-  unset -f _bun_global_node_modules _bun_list_globals _bun_snapshot_globals _append_version_changes_from_files
+  unset -f _state_dir _npm_global_update_due _npm_global_update_stamp _npm_view_version
+  unset -f _bun_global_node_modules _bun_global_pkg_version _ensure_bun_global_pinned
+  unset -f _bun_list_globals _bun_snapshot_globals _append_version_changes_from_files
   unset task_summaries version_changes
 }
