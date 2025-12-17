@@ -3,19 +3,54 @@
 #################################################################
 
 function dev-up() {
+  # 현재 쉘 상태 백업 (dev-up 종료 후 원복)
+  local __dev_up_old_opts __dev_up_old_trap_int __dev_up_old_trap_term
+  __dev_up_old_opts="$(set +o)"
+  __dev_up_old_trap_int="$(trap -p INT 2>/dev/null || true)"
+  __dev_up_old_trap_term="$(trap -p TERM 2>/dev/null || true)"
+
+  # 1. Trap 설정: 중간에 강제 종료되어도 뒷정리 수행
+  trap '_dev_up_cleanup; return 130' INT
+  trap '_dev_up_cleanup; return 143' TERM
+
   set -uo pipefail
 
   local -a task_summaries=()
   local -a version_changes=()
+  local -a temp_files=()
+
+  # -----------------------------------------------------------
+  # Helper Functions
+  # -----------------------------------------------------------
+  _dev_up_cleanup() {
+    # 먼저 trap과 set 옵션부터 원복 (dev-up 끝난 뒤 Ctrl+C 안전)
+    eval "$__dev_up_old_opts" 2>/dev/null || true
+    if [ -n "$__dev_up_old_trap_int" ]; then eval "$__dev_up_old_trap_int" || true; else trap - INT; fi
+    if [ -n "$__dev_up_old_trap_term" ]; then eval "$__dev_up_old_trap_term" || true; else trap - TERM; fi
+
+    # 임시 파일 삭제
+    if [ ${#temp_files[@]} -gt 0 ]; then
+      rm -f "${temp_files[@]}" 2>/dev/null || true
+    fi
+
+    # 함수 해제 (global namespace 오염 방지)
+    unset -f _log _ok _skip _fail _has _has_timeout_gnu _run _ver1 _record_change
+    unset -f _state_dir _npm_global_update_due _npm_global_update_stamp _npm_view_version
+    unset -f _bun_global_node_modules _bun_global_pkg_version _ensure_bun_global_pinned
+    unset -f _bun_list_globals _bun_snapshot_globals _append_version_changes_from_files
+    unset -f _bun_check_and_trust_allowlist
+    unset -f _dev_up_cleanup
+  }
 
   _log()  { printf "\n==> %s\n" "$*"; }
   _ok()   { printf "  ✓ %s\n" "$1"; task_summaries+=("✓ $1: ${2}s"); }
-  _skip() { printf "  ... %s (skipping)\n" "$*"; task_summaries+=("... $1: SKIPPED"); }
+  _skip() { printf "  ... %s (skipping)\n" "$*"; task_summaries+=("... $*: SKIPPED"); }
   _fail() { printf "  ✗ %s (FAILED)\n" "$1"; task_summaries+=("✗ $1: ${2}s (FAILED)"); }
   _has()  { command -v "$1" >/dev/null 2>&1; }
 
+  # Windows timeout.exe(pause)와 GNU timeout 구분
   _has_timeout_gnu() {
-    command -v timeout >/dev/null 2>&1 && timeout --version >/dev/null 2>&1
+    _has timeout && timeout --version 2>&1 | grep -q "GNU coreutils"
   }
 
   _run() {
@@ -107,7 +142,6 @@ function dev-up() {
     local out=""
 
     if ! _has npm; then
-      printf ""
       return 0
     fi
 
@@ -245,6 +279,43 @@ function dev-up() {
     done
   }
 
+  # 글로벌로 설치된 특정 패키지 폴더에서 untrusted 검사 후 allowlist만 trust
+  _bun_check_and_trust_allowlist() {
+    local bun_global_nm="$1"
+    local parent_pkg="$2"
+    shift 2
+    local -a allowlist=("$@")
+
+    local pkg_dir="${bun_global_nm}/${parent_pkg}"
+    [ -d "$pkg_dir" ] || return 0
+
+    local out
+    out="$(
+      cd "$pkg_dir" 2>/dev/null && bun pm untrusted 2>/dev/null || true
+    )"
+
+    if [ -z "$out" ]; then
+      return 0
+    fi
+
+    local -a to_trust=()
+    local dep
+    for dep in "${allowlist[@]}"; do
+      if printf '%s\n' "$out" | grep -Eq "(\\\\|/)node_modules(\\\\|/)${dep}(\\\\|/)" || printf '%s\n' "$out" | grep -Eq "(^|[[:space:]])${dep}([[:space:]]|$)"; then
+        to_trust+=("$dep")
+      fi
+    done
+
+    if [ "${#to_trust[@]}" -gt 0 ]; then
+      bun_untrusted_detected=1
+      _run "Bun trust (${parent_pkg})" bash -lc "cd \"${pkg_dir}\" && bun pm trust ${to_trust[*]}"
+    fi
+  }
+
+  # -----------------------------------------------------------
+  # Main Logic
+  # -----------------------------------------------------------
+
   local pnpm_warning_detected=0
   local bun_untrusted_detected=0
 
@@ -272,7 +343,7 @@ function dev-up() {
 
     _run "Bun 글로벌 패키지 업데이트" bun update -g
 
-    # Codex CLI 최신 보장, 이미 최신이면 스킵
+    # Codex / Gemini CLI
     local codex_target codex_latest
     codex_target="latest"
     codex_latest="$(_npm_view_version "@openai/codex")"
@@ -283,7 +354,6 @@ function dev-up() {
       _run "Codex CLI 설치 (@openai/codex@latest)" bun install -g "@openai/codex@latest"
     fi
 
-    # Gemini CLI 최신 보장, 이미 최신이면 스킵
     local gemini_target gemini_latest
     gemini_target="latest"
     gemini_latest="$(_npm_view_version "@google/gemini-cli")"
@@ -294,24 +364,7 @@ function dev-up() {
       _run "Gemini CLI 설치 (@google/gemini-cli@latest)" bun install -g "@google/gemini-cli@latest"
     fi
 
-    # 설치 확인
-    if _has codex; then
-      _run "Codex 버전 확인" codex --version
-    else
-      _skip "codex 실행 파일을 찾지 못했습니다. PATH를 확인하세요."
-    fi
-
-    if _has gemini; then
-      _run "Gemini CLI 버전 확인" gemini --version
-    elif _has gemini-cli; then
-      _run "Gemini CLI 버전 확인" gemini-cli --version
-    else
-      _skip "Gemini CLI 실행 파일을 찾지 못했습니다. PATH를 확인하세요."
-    fi
-
-    # bun 전역 전체 최신 강제
-    # 실행 시에만 켜기
-    # DEV_UP_BUN_FORCE_LATEST_ALL=1 dev-up
+    # Bun Force Latest All Logic
     if [ "${DEV_UP_BUN_FORCE_LATEST_ALL:-0}" -eq 1 ]; then
       local bun_global_nm
       bun_global_nm="$(_bun_global_node_modules)"
@@ -319,6 +372,7 @@ function dev-up() {
       local bun_before bun_after
       bun_before="$(mktemp)"
       bun_after="$(mktemp)"
+      temp_files+=("$bun_before" "$bun_after")
 
       _bun_snapshot_globals "$bun_global_nm" "$bun_before"
 
@@ -362,63 +416,23 @@ function dev-up() {
 
       _bun_snapshot_globals "$bun_global_nm" "$bun_after"
       _append_version_changes_from_files "$bun_before" "$bun_after" "[bun]"
-      rm -f "$bun_before" "$bun_after"
     else
       _skip "Bun 전역 패키지 최신 강제 설치 (DEV_UP_BUN_FORCE_LATEST_ALL=1 로 활성화)"
     fi
 
-    _log "Bun 전역 postinstall 스크립트 상태 확인"
-    local bun_untrusted_output
-    bun_untrusted_output="$(bun pm -g untrusted 2>/dev/null || true)"
+    # Bun postinstall 차단 자동 복구 (전역에서 가장 자주 터지는 케이스만)
+    local bun_global_nm
+    bun_global_nm="$(_bun_global_node_modules)"
 
-    if printf '%s\n' "$bun_untrusted_output" | grep -Fq "lifecycle scripts blocked"; then
-      bun_untrusted_detected=1
-      printf "  ⚠️ Bun 전역에서 차단된 lifecycle 스크립트가 감지되었습니다.\n"
-      printf "%s\n" "$bun_untrusted_output"
+    if [ -d "$bun_global_nm/wrangler" ]; then
+      _bun_check_and_trust_allowlist "$bun_global_nm" "wrangler" "esbuild" "workerd"
+    fi
+    if [ -d "$bun_global_nm/vercel" ]; then
+      _bun_check_and_trust_allowlist "$bun_global_nm" "vercel" "esbuild" "sharp"
+    fi
 
-      local globals_out
-      globals_out="$(bun pm ls -g 2>/dev/null || true)"
-
-      local -a BUN_TRUST_ALLOWLIST=()
-      local BUN_TRUST_SKIP_PKG="node-pty"
-
-      if printf '%s\n' "$globals_out" | grep -Fq "wrangler@"; then
-        BUN_TRUST_ALLOWLIST+=("esbuild" "workerd")
-      fi
-
-      if printf '%s\n' "$globals_out" | grep -Fq "vercel@"; then
-        BUN_TRUST_ALLOWLIST+=("esbuild" "sharp")
-      fi
-
-      local -A _seen=()
-      local -a BUN_TRUST_ALLOWLIST_UNIQ=()
-      local p
-      for p in "${BUN_TRUST_ALLOWLIST[@]}"; do
-        if [ -z "${_seen[$p]+x}" ]; then
-          _seen[$p]=1
-          BUN_TRUST_ALLOWLIST_UNIQ+=("$p")
-        fi
-      done
-
-      local -a bun_to_trust=()
-      for p in "${BUN_TRUST_ALLOWLIST_UNIQ[@]}"; do
-        if printf '%s\n' "$bun_untrusted_output" | grep -Eq "(\\\\|/)node_modules(\\\\|/)${p}(\\\\|/)"; then
-          bun_to_trust+=("$p")
-        fi
-      done
-
-      if printf '%s\n' "$bun_untrusted_output" | grep -Eq "(\\\\|/)node_modules(\\\\|/)${BUN_TRUST_SKIP_PKG}(\\\\|/)"; then
-        printf "  ... %s는 자동 trust에서 제외했습니다. 필요할 때만 수동으로 처리하세요.\n" "$BUN_TRUST_SKIP_PKG"
-      fi
-
-      if [ "${#bun_to_trust[@]}" -gt 0 ]; then
-        printf "  ... 자동 trust 후보(현재 전역 패키지 기준): %s\n" "${BUN_TRUST_ALLOWLIST_UNIQ[*]}"
-        _run "Bun 전역 postinstall 신뢰 및 실행 (allowlist)" bun pm -g trust "${bun_to_trust[@]}"
-      else
-        _ok "Bun 전역 postinstall (allowlist 대상 없음)" 0
-      fi
-    else
-      _ok "Bun 전역 postinstall 스크립트 상태 (차단 없음)" 0
+    if [ "$bun_untrusted_detected" -eq 0 ]; then
+      _ok "Bun postinstall 차단 검사 (주요 툴 기준)" 0
     fi
   else
     _skip "Bun이 설치되어 있지 않습니다."
@@ -442,11 +456,8 @@ function dev-up() {
     local julia_before julia_after
     julia_before=""
     if _has julia; then julia_before="$(_ver1 julia --version)"; fi
-
-    _log "Julia Toolchain 업데이트"
     _run "Juliaup 자체 업데이트" juliaup self update
     _run "Julia 채널 업데이트" juliaup update
-
     julia_after=""
     if _has julia; then julia_after="$(_ver1 julia --version)"; fi
     _record_change "[tool]" "julia" "$julia_before" "$julia_after"
@@ -466,6 +477,12 @@ function dev-up() {
   fi
 
   # 6. Python Ecosystem (uv & pip)
+  local python_cmd=""
+  if _has py; then python_cmd="py"
+  elif _has python3; then python_cmd="python3"
+  elif _has python; then python_cmd="python"
+  fi
+
   if _has uv; then
     local uv_before uv_after
     uv_before="$(_ver1 uv --version)"
@@ -479,19 +496,16 @@ function dev-up() {
     fi
 
     if [ "$uv_is_pip" -eq 1 ]; then
-      if _has py; then
-        _run "uv 업그레이드 (pip 설치본)" py -m pip install --upgrade uv
-      elif _has python; then
-        _run "uv 업그레이드 (pip 설치본)" python -m pip install --upgrade uv
+      if [ -n "$python_cmd" ]; then
+        _run "uv 업그레이드 (pip 설치본, via $python_cmd)" "$python_cmd" -m pip install --upgrade uv
       else
-        _skip "Python 런타임이 없어 uv(pip) 업그레이드를 건너뜁니다."
+        _skip "Python 런타임을 찾을 수 없어 uv(pip) 업그레이드를 건너뜁니다."
       fi
     else
       _run "uv 자체 업그레이드" uv self update
     fi
 
     _run "uv 글로벌 도구 전체 업그레이드" uv tool upgrade --all
-
     uv_after="$(_ver1 uv --version)"
     _record_change "[tool]" "uv" "$uv_before" "$uv_after"
   else
@@ -500,22 +514,15 @@ function dev-up() {
 
   local pip_before pip_after
   pip_before=""
-  if _has py; then
-    pip_before="$(_ver1 py -m pip --version)"
-    _run "Python pip 업그레이드 (via py)" py -m pip install --upgrade pip
-    pip_after="$(_ver1 py -m pip --version)"
-    _record_change "[tool]" "pip" "$pip_before" "$pip_after"
-  elif _has python; then
-    pip_before="$(_ver1 python -m pip --version)"
-    _run "Python pip 업그레이드 (via python)" python -m pip install --upgrade pip
-    pip_after="$(_ver1 python -m pip --version)"
+  if [ -n "$python_cmd" ]; then
+    pip_before="$(_ver1 "$python_cmd" -m pip --version)"
+    _run "Python pip 업그레이드 (via $python_cmd)" "$python_cmd" -m pip install --upgrade pip
+    pip_after="$(_ver1 "$python_cmd" -m pip --version)"
     _record_change "[tool]" "pip" "$pip_before" "$pip_after"
   fi
 
-  # 7. Node.js Ecosystem (npm & corepack)
+  # 7. Node.js Ecosystem
   if _has npm; then
-    _log "npm 및 글로벌 패키지 업데이트"
-
     local npm_before npm_after
     npm_before="$(_ver1 npm -v)"
     _run "npm 자체 업데이트" npm install -g npm@latest --no-fund --no-audit
@@ -527,27 +534,28 @@ function dev-up() {
         _npm_global_update_stamp
       fi
     else
-      _skip "npm 글로벌 패키지 업데이트 (7일 주기, 아직 시점 아님. 강제는 DEV_UP_NPM_GLOBAL_FORCE=1 dev-up)"
+      _skip "npm 글로벌 패키지 업데이트 (7일 주기 미도래)"
     fi
   else
     _skip "npm이 설치되어 있지 않습니다."
   fi
 
   if _has corepack; then
-    _run "Corepack (pnpm@latest 설정)" corepack use pnpm@latest
+    if ! _run "Corepack (pnpm@latest 설정)" corepack use pnpm@latest; then
+      _run "Corepack enable pnpm" corepack enable pnpm
+      _run "Corepack prepare pnpm@latest --activate" corepack prepare pnpm@latest --activate
+    fi
   else
     _skip "Corepack이 설치되어 있지 않습니다."
   fi
 
   # 8. pnpm
   if _has pnpm; then
-    _log "pnpm 글로벌 패키지 업데이트"
-
     local pnpm_start_time
     pnpm_start_time=$(date +%s)
-
     local pnpm_log
     pnpm_log=$(mktemp)
+    temp_files+=("$pnpm_log")
 
     if pnpm update -g --latest 2>&1 | tee "$pnpm_log"; then
       _ok "pnpm 글로벌 패키지 업데이트" "$(( $(date +%s) - pnpm_start_time ))"
@@ -558,32 +566,29 @@ function dev-up() {
     if grep -Fq "Ignored build scripts" "$pnpm_log"; then
       pnpm_warning_detected=1
     fi
-
-    rm -f "$pnpm_log"
   else
     _skip "pnpm이 설치되어 있지 않습니다."
   fi
 
   # 9. Winget
   if _has winget; then
-    _log "Winget 패키지 업그레이드"
-
-    _log "Winget (GitHub CLI) 업그레이드"
     local gh_start_time
     gh_start_time=$(date +%s)
+
+    _log "Winget (GitHub CLI) 업그레이드"
     if winget upgrade --id GitHub.cli --accept-source-agreements --accept-package-agreements; then
-      _ok "Winget (GitHub CLI) 업그레이드" "$(( $(date +%s) - gh_start_time ))"
+      _ok "Winget (GitHub CLI) 완료" "$(( $(date +%s) - gh_start_time ))"
     else
-      _ok "Winget (GitHub CLI) 업그레이드 (업데이트 없음)" "$(( $(date +%s) - gh_start_time ))"
+      _fail "Winget (GitHub CLI) 실패 (권한 확인 필요)" "$(( $(date +%s) - gh_start_time ))"
     fi
 
     _log "Winget (Starship) 업그레이드"
     local starship_start_time
     starship_start_time=$(date +%s)
     if winget upgrade --id Starship.Starship --accept-source-agreements --accept-package-agreements; then
-      _ok "Winget (Starship) 업그레이드" "$(( $(date +%s) - starship_start_time ))"
+      _ok "Winget (Starship) 완료" "$(( $(date +%s) - starship_start_time ))"
     else
-      _ok "Winget (Starship) 업그레이드 (업데이트 없음)" "$(( $(date +%s) - starship_start_time ))"
+      _fail "Winget (Starship) 실패 (권한 확인 필요)" "$(( $(date +%s) - starship_start_time ))"
     fi
   else
     _skip "Winget이 설치되어 있지 않습니다."
@@ -593,28 +598,22 @@ function dev-up() {
   if _has choco; then
     _log "Chocolatey 패키지 업그레이드"
 
-    _log "Choco (Self) 업그레이드"
-    local choco_self_start_time
-    choco_self_start_time=$(date +%s)
     if choco upgrade chocolatey -y; then
-      _ok "Choco (Self) 업그레이드" "$(( $(date +%s) - choco_self_start_time ))"
+      _ok "Choco (Self)" 0
     else
-      _ok "Choco (Self) 업그레이드 (업데이트 없음)" "$(( $(date +%s) - choco_self_start_time ))"
+      _fail "Choco (Self) 실패 (관리자 권한 필요)" 0
     fi
 
-    _log "Choco (Dart SDK) 업그레이드"
-    local dart_start_time
-    dart_start_time=$(date +%s)
     if choco upgrade dart-sdk -y; then
-      _ok "Choco (Dart SDK) 업그레이드" "$(( $(date +%s) - dart_start_time ))"
+      _ok "Choco (Dart SDK)" 0
     else
-      _ok "Choco (Dart SDK) 업그레이드 (업데이트 없음)" "$(( $(date +%s) - dart_start_time ))"
+      _fail "Choco (Dart SDK) 실패" 0
     fi
   else
     _skip "Chocolatey가 설치되어 있지 않습니다."
   fi
 
-  # 요약
+  # 요약 출력
   _log "⏱️ 작업별 소요 시간 요약"
   local summary
   for summary in "${task_summaries[@]}"; do
@@ -626,18 +625,10 @@ function dev-up() {
   _log "✅ 모든 작업 완료! (총 소요 시간: $((end_ts - start_ts))초)"
 
   if [ "$pnpm_warning_detected" -eq 1 ]; then
-    printf "\n"
-    printf "  💡 pnpm 경고 알림\n"
-    printf "    로그에서 \"Ignored build scripts\"가 감지되었습니다.\n"
-    printf "    'pnpm approve-builds -g'를 실행해 신뢰하는 빌드를 승인하세요.\n"
+    printf "\n  💡 pnpm 경고: 'pnpm approve-builds -g' 확인 필요\n"
   fi
-
   if [ "$bun_untrusted_detected" -eq 1 ]; then
-    printf "\n"
-    printf "  💡 Bun 안내\n"
-    printf "    trust --all 자동 실행을 하지 않습니다.\n"
-    printf "    wrangler, vercel 전역 사용 여부에 따라 allowlist를 구성합니다.\n"
-    printf "    node-pty는 자동 trust에서 제외합니다.\n"
+    printf "\n  💡 Bun 경고: untrusted lifecycle scripts 감지됨\n"
   fi
 
   printf "\n"
@@ -651,9 +642,6 @@ function dev-up() {
     _log "⬆️ 이번 실행에서 버전 변경 없음"
   fi
 
-  unset -f _log _ok _skip _fail _has _has_timeout_gnu _run _ver1 _record_change
-  unset -f _state_dir _npm_global_update_due _npm_global_update_stamp _npm_view_version
-  unset -f _bun_global_node_modules _bun_global_pkg_version _ensure_bun_global_pinned
-  unset -f _bun_list_globals _bun_snapshot_globals _append_version_changes_from_files
-  unset task_summaries version_changes
+  # 정리 함수 호출 (Trap 때문에 명시적으로 호출)
+  _dev_up_cleanup
 }
