@@ -12,21 +12,25 @@ dev-up 한 줄로 업데이트 체인을 굴리고, 마지막에 성공 실패�
 업데이트 대상 요약
 
 * Bun
-
   * bun upgrade
   * bun update -g
   * codex, gemini-cli 최신 보장 설치
   * bun 전역 postinstall 차단 감지 후 allowlist 방식 trust
 * Node.js
-
   * npm 자체 업데이트
   * npm 전역 업데이트는 7일에 한 번만 자동 실행
-  * Corepack으로 pnpm 최신 지정
+  * Corepack으로 pnpm 최신 활성화 (`corepack prepare pnpm@latest --activate`)
   * pnpm 전역 패키지 업데이트
 * Rust: rustup update
 * Python: pip 업데이트, uv 업데이트는 설치 방식에 따라 자동 분기
 * Deno, Flutter, Julia: 각 런타임 및 SDK 업데이트
 * Windows 시스템: Winget, Chocolatey 업데이트
+
+## 기술적 특성
+
+* **서브쉘 구조**: 네임스페이스 오염 방지, 강제 종료 시도 안전
+* **종료 코드 반환**: 실패 시 `1` 반환으로 자동화 체인/스케줄러 지원
+* **임시 파일 정리**: `trap EXIT`로 모든 종료 경로에서 100% 정리 보장
 
 ## 업데이트 철학
 
@@ -47,24 +51,21 @@ dev-up 한 줄로 업데이트 체인을 굴리고, 마지막에 성공 실패�
 
 1. 설정 파일 열기
 
-    ```plaintext
-    nano ~/.bashrc
-    ```
+```bash
+nano ~/.bashrc
+```
 
-2. 스크립트 등록
+1. 스크립트 등록: 파일 맨 아래에 dev-up 함수 전체 코드를 붙여넣습니다. Starship 같은 프롬프트 설정이 있다면 그 아래에 배치하는 것을 권장합니다.
 
-    파일 맨 아래에 dev-up 함수 전체 코드를 붙여넣습니다.
-    Starship 같은 프롬프트 설정이 있다면 그 아래에 배치하는 것을 권장합니다.
+1. 적용
 
-3. 적용
-
-    ```plaintext
-    source ~/.bashrc
-    ```
+```bash
+source ~/.bashrc
+```
 
 ## 사용 방법
 
-```plaintext
+```bash
 dev-up
 ```
 
@@ -84,13 +85,13 @@ dev-up
 * 기본 동작: 7일에 한 번만 npm update -g 실행
 * 지금 바로 강제 실행
 
-```plaintext
+```bash
 DEV_UP_NPM_GLOBAL_FORCE=1 dev-up
 ```
 
 * 주기 변경
 
-```plaintext
+```bash
 DEV_UP_NPM_GLOBAL_INTERVAL_DAYS=3 dev-up
 ```
 
@@ -103,7 +104,7 @@ DEV_UP_NPM_GLOBAL_INTERVAL_DAYS=3 dev-up
 * 이 파일을 삭제하면 다음 실행에서 npm 전역 업데이트가 다시 실행됩니다
 * 상태 폴더를 바꾸고 싶으면
 
-```plaintext
+```bash
 DEV_UP_STATE_DIR="$HOME/.cache/my-dev-up" dev-up
 ```
 
@@ -114,21 +115,19 @@ bun 전역에 설치된 모든 패키지를 최신으로 강제하려면 아래 
 
 * bun 전역 전체 최신 강제
 
-```plaintext
+```bash
 DEV_UP_BUN_FORCE_LATEST_ALL=1 dev-up
 ```
 
 * 캐시까지 비우고 더 강하게
 
-```plaintext
+```bash
 DEV_UP_BUN_FORCE_LATEST_ALL=1 DEV_UP_BUN_FORCE_LATEST_COLD=1 dev-up
 ```
 
-* 버전 번호를 npm view로 고정해서 더 확실하게
+* 버전 번호를 npm view로 고정해서 더 확실하게 (정확도는 높고, 느려질 수 있습니다)
 
-  * 정확도는 높고, 느려질 수 있습니다
-
-```plaintext
+```bash
 DEV_UP_BUN_FORCE_LATEST_ALL=1 DEV_UP_BUN_FORCE_LATEST_NPM=1 dev-up
 ```
 
@@ -136,7 +135,7 @@ DEV_UP_BUN_FORCE_LATEST_ALL=1 DEV_UP_BUN_FORCE_LATEST_NPM=1 dev-up
 
 이미 최신이어도 다시 설치하고 싶을 때만 사용합니다.
 
-```plaintext
+```bash
 DEV_UP_BUN_FORCE_REINSTALL=1 dev-up
 ```
 
@@ -176,17 +175,20 @@ npm update -g는 전역 패키지 수가 많을수록 매우 무거워집니다.
 ## 주의 사항
 
 * 관리자 권한
-
   * Winget이나 Chocolatey 업데이트는 관리자 권한이 필요할 수 있습니다
+
+* Winget (Git Bash)
+  * Git Bash에서 winget 실행 시 winpty 래핑을 자동 적용합니다
+  * PATH에 winget이 없어도 `SystemRoot` 환경변수를 활용해 동적으로 경로를 탐색합니다 (C: 외 드라이브 지원)
+
 * pnpm 경고
-
   * Ignored build scripts 경고가 감지되면 pnpm approve-builds -g 실행 안내가 출력됩니다
-* bun 전역 postinstall
 
+* bun 전역 postinstall
   * trust all은 자동 실행하지 않습니다
   * allowlist에 포함된 패키지만 trust를 시도합니다
-* 실행 파일 경로 충돌
 
+* 실행 파일 경로 충돌
   * 전역과 로컬이 같이 있을 때는 PATH 우선순위 때문에 “다른 버전이 실행”될 수 있습니다
   * 프로젝트에서는 bunx 또는 bun run으로 로컬 실행을 고정하는 것을 권장합니다
 
@@ -198,4 +200,14 @@ Dev-Up은 bun pm ls -g 결과를 보고 allowlist를 구성합니다.
 * vercel 전역 사용 시: esbuild, sharp trust 후보에 포함
 * node-pty: 자동 trust 제외
 
-원하는 경우 allowlist 규칙은 dev-up 함수 내부에서 수정할 수 있습니다.
+### allowlist 커스터마이징
+
+환경변수로 allowlist를 확장할 수 있습니다.
+
+```bash
+# wrangler allowlist 커스터마이징
+export DEV_UP_BUN_TRUST_ALLOWLIST_WRANGLER="esbuild workerd miniflare"
+
+# vercel allowlist 커스터마이징
+export DEV_UP_BUN_TRUST_ALLOWLIST_VERCEL="esbuild sharp puppeteer"
+```
