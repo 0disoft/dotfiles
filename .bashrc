@@ -65,6 +65,12 @@ dev-up() {
       fi
     }
 
+    _summary_globals_enabled() {
+      local v="${DEV_UP_SUMMARY_GLOBALS:-1}"
+      if ! printf '%s' "$v" | grep -Eq '^[0-9]+$'; then v=1; fi
+      [ "$v" -ne 0 ]
+    }
+
     _state_dir() {
       printf '%s\n' "${DEV_UP_STATE_DIR:-$HOME/.cache/dev-up}"
     }
@@ -211,6 +217,68 @@ dev-up() {
       done
     }
 
+    _npm_snapshot_globals() {
+      local out_file="$1"
+      : > "$out_file"
+      _has npm || return 0
+      _has node || return 0
+      local json
+      json=$(npm ls -g --depth 0 --json 2>/dev/null | tr -d '\r' || true)
+      [ -n "$json" ] || return 0
+      printf '%s' "$json" | node -e 'const fs=require("fs");const input=fs.readFileSync(0,"utf8").trim();if(!input)process.exit(0);let data;try{data=JSON.parse(input);}catch(e){process.exit(0);}const deps=(data&&data.dependencies)||{};for(const [name,info] of Object.entries(deps)){if(info&&info.version){process.stdout.write(`${name}\t${info.version}\n`);}}' 2>/dev/null > "$out_file" || true
+    }
+
+    _pnpm_snapshot_globals() {
+      local out_file="$1"
+      local line pkgver pkg ver
+      : > "$out_file"
+      _has pnpm || return 0
+
+      if _has node; then
+        local json
+        json=$(pnpm list -g --depth 0 --json 2>/dev/null | tr -d '\r' || true)
+        if [ -n "$json" ]; then
+          printf '%s' "$json" | node -e 'const fs=require("fs");const input=fs.readFileSync(0,"utf8").trim();if(!input)process.exit(0);let data;try{data=JSON.parse(input);}catch(e){process.exit(0);}const nodes=Array.isArray(data)?data:[data];for(const node of nodes){const deps=(node&&node.dependencies)||{};for(const [name,info] of Object.entries(deps)){if(info&&info.version){process.stdout.write(`${name}\t${info.version}\n`);}}}' 2>/dev/null > "$out_file" || true
+          [ -s "$out_file" ] && return 0
+          : > "$out_file"
+        fi
+      fi
+
+      pnpm list -g --depth 0 2>/dev/null | tr -d '\r' | while IFS= read -r line; do
+        if [[ "$line" =~ ([^[:space:]]+@[^[:space:]]+)$ ]]; then
+          pkgver="${BASH_REMATCH[1]}"
+          pkg="${pkgver%@*}"
+          ver="${pkgver##*@}"
+          printf '%s\t%s\n' "$pkg" "$ver"
+        fi
+      done >> "$out_file"
+    }
+
+    _append_uv_changes_from_log() {
+      local log="$1" prefix="${2:-[uv]}"
+      [ -f "$log" ] || return 0
+      local -A old=()
+      local line pkg ver
+      while IFS= read -r line; do
+        line=$(printf '%s' "$line" | tr -d '\r')
+        if [[ "$line" =~ -[[:space:]]*([A-Za-z0-9._+-]+)==([^[:space:]]+) ]]; then
+          pkg="${BASH_REMATCH[1]}"
+          ver="${BASH_REMATCH[2]}"
+          old["$pkg"]="$ver"
+        elif [[ "$line" =~ ^[[:space:]]*\\+[[:space:]]*([A-Za-z0-9._+-]+)==([^[:space:]]+) ]]; then
+          pkg="${BASH_REMATCH[1]}"
+          ver="${BASH_REMATCH[2]}"
+          if [ -n "${old[$pkg]:-}" ]; then
+            if [ "${old[$pkg]}" != "$ver" ]; then
+              version_changes+=("${prefix} ${pkg} ${old[$pkg]} -> ${ver}")
+            fi
+          else
+            version_changes+=("${prefix} ${pkg} (없음) -> ${ver}")
+          fi
+        fi
+      done < "$log"
+    }
+
     _bun_check_and_trust_allowlist() {
       local bun_global_nm="$1" parent_pkg="$2"
       shift 2
@@ -234,7 +302,7 @@ dev-up() {
       fi
     }
 
-    _winget_upgrade() {
+    _winget_upgrade_capture() {
       local id="$1"
       local winget_cmd="winget"
       if ! _has winget; then
@@ -244,16 +312,91 @@ dev-up() {
         if [[ -x "${system32_path}/winget.exe" ]]; then
           winget_cmd="${system32_path}/winget.exe"
         else
-          _fail "winget을 찾을 수 없습니다." 0
+          printf "winget을 찾을 수 없습니다.\n"
           return 1
         fi
       fi
       local winget_opts=(--accept-source-agreements --accept-package-agreements --disable-interactivity --silent)
       if _has winpty && [[ -n "${MSYSTEM:-}" ]]; then
-        winpty -Xallow-non-tty "$winget_cmd" upgrade --id "$id" -e "${winget_opts[@]}"
+        winpty -Xallow-non-tty "$winget_cmd" upgrade --id "$id" -e "${winget_opts[@]}" 2>&1
       else
-        "$winget_cmd" upgrade --id "$id" -e "${winget_opts[@]}"
+        "$winget_cmd" upgrade --id "$id" -e "${winget_opts[@]}" 2>&1
       fi
+    }
+
+    _run_winget_upgrade() {
+      local title="$1" id="$2"
+      _log "$title"
+      local start_time end_time duration
+      start_time=$(date +%s)
+
+      local output rc
+      output=$(_winget_upgrade_capture "$id")
+      rc=$?
+      [ -n "$output" ] && printf "%s\n" "$output"
+
+      if printf '%s\n' "$output" | tr -d '\r' | grep -Eq "사용 가능한 업그레이드를 찾을 수 없습니다|구성된 원본에서 사용할 수 있는 최신 패키지 버전이 없습니다|No available upgrade|No applicable update|No installed package found matching input criteria"; then
+        end_time=$(date +%s)
+        duration=$((end_time - start_time))
+        _skip "${title} (업데이트 없음)"
+        return 0
+      fi
+
+      if [ "$rc" -eq 0 ]; then
+        end_time=$(date +%s)
+        duration=$((end_time - start_time))
+        _ok "$title" "$duration"
+        return 0
+      else
+        end_time=$(date +%s)
+        duration=$((end_time - start_time))
+        _fail "$title" "$duration"
+        overall_rc=1
+        return 1
+      fi
+    }
+
+    _run_corepack_enable_pnpm() {
+      local title="Corepack enable pnpm"
+      _log "$title"
+      local start_time end_time duration
+      start_time=$(date +%s)
+
+      local output rc
+      output=$(corepack enable pnpm 2>&1)
+      rc=$?
+      [ -n "$output" ] && printf "%s\n" "$output"
+
+      if [ "$rc" -eq 0 ]; then
+        end_time=$(date +%s)
+        duration=$((end_time - start_time))
+        _ok "$title" "$duration"
+        return 0
+      fi
+
+      if printf '%s\n' "$output" | tr -d '\r' | grep -Eq "EPERM|EACCES|Access is denied|operation not permitted|Permission denied"; then
+        local install_dir="${DEV_UP_COREPACK_DIR:-$HOME/.local/bin}"
+        mkdir -p "$install_dir" >/dev/null 2>&1 || true
+        local output2 rc2
+        output2=$(corepack enable pnpm --install-directory "$install_dir" 2>&1)
+        rc2=$?
+        [ -n "$output2" ] && printf "%s\n" "$output2"
+        if [ "$rc2" -eq 0 ]; then
+          corepack_fallback_used=1
+          corepack_fallback_dir="$install_dir"
+          export PATH="$install_dir:$PATH"
+          end_time=$(date +%s)
+          duration=$((end_time - start_time))
+          _ok "${title} (fallback: ${install_dir})" "$duration"
+          return 0
+        fi
+      fi
+
+      end_time=$(date +%s)
+      duration=$((end_time - start_time))
+      _fail "$title" "$duration"
+      overall_rc=1
+      return 1
     }
 
     # -----------------------------------------------------------
@@ -261,6 +404,8 @@ dev-up() {
     # -----------------------------------------------------------
     local pnpm_warning_detected=0
     local bun_untrusted_detected=0
+    local corepack_fallback_used=0
+    local corepack_fallback_dir=""
     local start_ts
     start_ts=$(date +%s)
 
@@ -283,6 +428,16 @@ dev-up() {
       bun_after_runtime=$(_ver1 bun --version)
       _record_change "[tool]" "bun" "$bun_before_runtime" "$bun_after_runtime"
 
+      local bun_global_nm="" bun_before="" bun_after=""
+      if _summary_globals_enabled; then
+        bun_global_nm=$(_bun_global_node_modules)
+        bun_before=$(mktemp)
+        bun_after=$(mktemp)
+        temp_files+=("$bun_before" "$bun_after")
+
+        _bun_snapshot_globals "$bun_global_nm" "$bun_before"
+      fi
+
       _run "Bun 글로벌 패키지 업데이트" bun update -g
 
       local codex_latest gemini_latest
@@ -301,13 +456,15 @@ dev-up() {
       fi
 
       if [ "${DEV_UP_BUN_FORCE_LATEST_ALL:-0}" -eq 1 ]; then
-        local bun_global_nm bun_before bun_after
-        bun_global_nm=$(_bun_global_node_modules)
-        bun_before=$(mktemp)
-        bun_after=$(mktemp)
-        temp_files+=("$bun_before" "$bun_after")
-
-        _bun_snapshot_globals "$bun_global_nm" "$bun_before"
+        if [ -z "$bun_global_nm" ]; then
+          bun_global_nm=$(_bun_global_node_modules)
+        fi
+        if [ -z "$bun_before" ]; then
+          bun_before=$(mktemp)
+          bun_after=$(mktemp)
+          temp_files+=("$bun_before" "$bun_after")
+          _bun_snapshot_globals "$bun_global_nm" "$bun_before"
+        fi
 
         if [ "${DEV_UP_BUN_FORCE_LATEST_COLD:-0}" -eq 1 ]; then
           _log "Bun 캐시 정리"
@@ -342,15 +499,16 @@ dev-up() {
           _fail "Bun 전역 패키지 최신 강제 설치" "$((force_end - force_start))"
           printf "    실패한 패키지: %s\n" "${failed_pkgs[*]}"
         fi
-
-        _bun_snapshot_globals "$bun_global_nm" "$bun_after"
-        _append_version_changes_from_files "$bun_before" "$bun_after" "[bun]"
       else
         _skip "Bun 전역 패키지 최신 강제 설치 (DEV_UP_BUN_FORCE_LATEST_ALL=1 로 활성화)"
       fi
 
-      local bun_global_nm
-      bun_global_nm=$(_bun_global_node_modules)
+      if [ -n "$bun_before" ]; then
+        _bun_snapshot_globals "$bun_global_nm" "$bun_after"
+        _append_version_changes_from_files "$bun_before" "$bun_after" "[bun]"
+      fi
+
+      [ -z "$bun_global_nm" ] && bun_global_nm=$(_bun_global_node_modules)
       
       # Bun trust allowlist (환경변수로 확장 가능: DEV_UP_BUN_TRUST_ALLOWLIST_WRANGLER, DEV_UP_BUN_TRUST_ALLOWLIST_VERCEL)
       local -a wrangler_allowlist=(${DEV_UP_BUN_TRUST_ALLOWLIST_WRANGLER:-esbuild workerd})
@@ -420,7 +578,15 @@ dev-up() {
       else
         _run "uv 자체 업그레이드" uv self update
       fi
-      _run "uv 글로벌 도구 전체 업그레이드" uv tool upgrade --all
+      if _summary_globals_enabled; then
+        local uv_tool_log
+        uv_tool_log=$(mktemp)
+        temp_files+=("$uv_tool_log")
+        _run "uv 글로벌 도구 전체 업그레이드" bash -c "set -o pipefail; uv tool upgrade --all 2>&1 | tee \"$uv_tool_log\""
+        _append_uv_changes_from_log "$uv_tool_log" "[uv]"
+      else
+        _run "uv 글로벌 도구 전체 업그레이드" uv tool upgrade --all
+      fi
       uv_after=$(_ver1 uv --version)
       _record_change "[tool]" "uv" "$uv_before" "$uv_after"
     else
@@ -447,8 +613,21 @@ dev-up() {
       _record_change "[tool]" "npm" "$npm_before" "$npm_after"
 
       if _npm_global_update_due; then
+        local npm_pkgs_before="" npm_pkgs_after=""
+        if _summary_globals_enabled; then
+          npm_pkgs_before=$(mktemp)
+          npm_pkgs_after=$(mktemp)
+          temp_files+=("$npm_pkgs_before" "$npm_pkgs_after")
+          _npm_snapshot_globals "$npm_pkgs_before"
+        fi
+
         if _run "npm 글로벌 패키지 업데이트 (7일 주기)" npm update -g --no-fund --no-audit; then
           _npm_global_update_stamp
+        fi
+
+        if [ -n "$npm_pkgs_before" ]; then
+          _npm_snapshot_globals "$npm_pkgs_after"
+          _append_version_changes_from_files "$npm_pkgs_before" "$npm_pkgs_after" "[npm]"
         fi
       else
         _skip "npm 글로벌 패키지 업데이트 (7일 주기 미도래)"
@@ -458,7 +637,7 @@ dev-up() {
     fi
 
     if _has corepack; then
-      _run "Corepack enable pnpm" corepack enable pnpm
+      _run_corepack_enable_pnpm
       _run "Corepack (pnpm@latest 활성화)" corepack prepare pnpm@latest --activate
     else
       _skip "Corepack이 설치되어 있지 않습니다."
@@ -466,10 +645,17 @@ dev-up() {
 
     # 8. pnpm
     if _has pnpm; then
-      local pnpm_start_time pnpm_log pnpm_exit_code
+      local pnpm_start_time pnpm_log pnpm_exit_code pnpm_before pnpm_after
       pnpm_start_time=$(date +%s)
       pnpm_log=$(mktemp)
       temp_files+=("$pnpm_log")
+
+      if _summary_globals_enabled; then
+        pnpm_before=$(mktemp)
+        pnpm_after=$(mktemp)
+        temp_files+=("$pnpm_before" "$pnpm_after")
+        _pnpm_snapshot_globals "$pnpm_before"
+      fi
 
       pnpm update -g --latest 2>&1 | tee "$pnpm_log"
       pnpm_exit_code=${PIPESTATUS[0]}
@@ -483,14 +669,19 @@ dev-up() {
       if grep -Fq "Ignored build scripts" "$pnpm_log" 2>/dev/null; then
         pnpm_warning_detected=1
       fi
+
+      if [ -n "${pnpm_before:-}" ]; then
+        _pnpm_snapshot_globals "$pnpm_after"
+        _append_version_changes_from_files "$pnpm_before" "$pnpm_after" "[pnpm]"
+      fi
     else
       _skip "pnpm이 설치되어 있지 않습니다."
     fi
 
     # 9. Winget
     if _has winget || [[ -x "/c/Windows/System32/winget.exe" ]]; then
-      _run "Winget (GitHub CLI) 업그레이드" _winget_upgrade "GitHub.cli"
-      _run "Winget (Starship) 업그레이드" _winget_upgrade "Starship.Starship"
+      _run_winget_upgrade "Winget (GitHub CLI) 업그레이드" "GitHub.cli"
+      _run_winget_upgrade "Winget (Starship) 업그레이드" "Starship.Starship"
     else
       _skip "Winget이 설치되어 있지 않습니다."
     fi
@@ -531,6 +722,7 @@ dev-up() {
 
     [ "$pnpm_warning_detected" -eq 1 ] && printf "\n  💡 pnpm 경고: 'pnpm approve-builds -g' 확인 필요\n"
     [ "$bun_untrusted_detected" -eq 1 ] && printf "\n  💡 Bun 경고: untrusted lifecycle scripts 감지됨\n"
+    [ "$corepack_fallback_used" -eq 1 ] && printf "\n  💡 Corepack: fallback install dir 사용됨 (%s) — PATH에 추가 필요할 수 있음\n" "$corepack_fallback_dir"
 
     printf "\n"
     if [ "${#version_changes[@]}" -gt 0 ]; then
@@ -547,3 +739,9 @@ dev-up() {
     exit $overall_rc
   )
 }
+
+# Ensure Corepack fallback bin is on PATH (used when corepack enable hits EPERM)
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac

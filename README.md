@@ -8,6 +8,7 @@ dev-up 한 줄로 업데이트 체인을 굴리고, 마지막에 성공 실패�
 * 설치된 도구만 자동 감지해서, 있는 것만 업데이트합니다
 * 작업별 소요 시간과 성공 실패를 요약합니다
 * 이번 실행에서 버전이 바뀐 항목만 따로 모아서 보여줍니다
+* 전역 패키지 변경도 요약에 포함합니다 (기본 활성화)
 
 업데이트 대상 요약
 
@@ -108,6 +109,29 @@ DEV_UP_NPM_GLOBAL_INTERVAL_DAYS=3 dev-up
 DEV_UP_STATE_DIR="$HOME/.cache/my-dev-up" dev-up
 ```
 
+### 전역 패키지 변경 요약
+
+기본적으로 bun/pnpm/npm 전역 패키지와 uv tool 업데이트 결과를 요약에 포함합니다.
+전역 패키지 수가 많으면 약간 느려질 수 있습니다.
+
+* 끄기
+
+```bash
+DEV_UP_SUMMARY_GLOBALS=0 dev-up
+```
+
+### Corepack enable 권한 문제 우회
+
+Windows에서 `corepack enable pnpm`이 권한 오류(EPERM/EACCES/Access denied)로 실패하면,
+자동으로 사용자 쓰기 가능한 경로에 fallback 설치를 시도합니다.
+기본 fallback 경로는 `$HOME/.local/bin`이며, PATH에 추가되어야 합니다.
+
+* fallback 경로 지정
+
+```bash
+DEV_UP_COREPACK_DIR="$HOME/.local/bin" dev-up
+```
+
 ### bun 전역 패키지 전체 최신 강제
 
 기본 동작은 codex와 gemini-cli만 최신 보장을 합니다.
@@ -180,6 +204,7 @@ npm update -g는 전역 패키지 수가 많을수록 매우 무거워집니다.
 * Winget (Git Bash)
   * Git Bash에서 winget 실행 시 winpty 래핑을 자동 적용합니다
   * PATH에 winget이 없어도 `SystemRoot` 환경변수를 활용해 동적으로 경로를 탐색합니다 (C: 외 드라이브 지원)
+  * 업데이트 없음 메시지는 실패가 아니라 SKIPPED로 처리합니다
 
 * pnpm 경고
   * Ignored build scripts 경고가 감지되면 pnpm approve-builds -g 실행 안내가 출력됩니다
