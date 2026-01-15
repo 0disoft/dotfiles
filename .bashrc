@@ -66,7 +66,7 @@ dev-up() {
     }
 
     _summary_globals_enabled() {
-      local v="${DEV_UP_SUMMARY_GLOBALS:-1}"
+      local v="${DEV_UP_SUMMARY_GLOBALS:-0}"
       if ! printf '%s' "$v" | grep -Eq '^[0-9]+$'; then v=1; fi
       [ "$v" -ne 0 ]
     }
@@ -100,6 +100,33 @@ dev-up() {
       mkdir -p "$sd" >/dev/null 2>&1 || true
       now=$(date +%s)
       printf '%s' "$now" > "${sd}/npm-global-update.ts" 2>/dev/null || true
+    }
+
+    _npm_self_update_due() {
+      if [ "${DEV_UP_NPM_SELF_FORCE:-0}" -eq 1 ]; then return 0; fi
+      local interval_days="${DEV_UP_NPM_SELF_INTERVAL_DAYS:-3}"
+      if ! printf '%s' "$interval_days" | grep -Eq '^[0-9]+$'; then interval_days=3; fi
+
+      local sd stamp now last interval
+      sd="$(_state_dir)"
+      mkdir -p "$sd" >/dev/null 2>&1 || true
+      stamp="${sd}/npm-self-update.ts"
+      now=$(date +%s)
+      interval=$((interval_days * 86400))
+
+      if [ ! -f "$stamp" ]; then return 0; fi
+      last=$(cat "$stamp" 2>/dev/null | tr -d '\r\n' || true)
+      if ! printf '%s' "$last" | grep -Eq '^[0-9]+$'; then return 0; fi
+      if [ $((now - last)) -ge "$interval" ]; then return 0; fi
+      return 1
+    }
+
+    _npm_self_update_stamp() {
+      local sd now
+      sd="$(_state_dir)"
+      mkdir -p "$sd" >/dev/null 2>&1 || true
+      now=$(date +%s)
+      printf '%s' "$now" > "${sd}/npm-self-update.ts" 2>/dev/null || true
     }
 
     _npm_view_version() {
@@ -440,17 +467,17 @@ dev-up() {
 
       _run "Bun 글로벌 패키지 업데이트" bun update -g
 
-      local codex_latest gemini_latest
-      codex_latest=$(_npm_view_version "@openai/codex")
-      if [ -n "$codex_latest" ]; then
-        _ensure_bun_global_pinned "Codex CLI" "@openai/codex" "$codex_latest"
+      local codex_installed gemini_installed
+      codex_installed=$(_bun_global_pkg_version "@openai/codex")
+      if [ -n "$codex_installed" ]; then
+        _ok "Codex CLI 설치됨 (${codex_installed})" 0
       else
         _run "Codex CLI 설치 (@openai/codex@latest)" bun install -g "@openai/codex@latest"
       fi
 
-      gemini_latest=$(_npm_view_version "@google/gemini-cli")
-      if [ -n "$gemini_latest" ]; then
-        _ensure_bun_global_pinned "Gemini CLI" "@google/gemini-cli" "$gemini_latest"
+      gemini_installed=$(_bun_global_pkg_version "@google/gemini-cli")
+      if [ -n "$gemini_installed" ]; then
+        _ok "Gemini CLI 설치됨 (${gemini_installed})" 0
       else
         _run "Gemini CLI 설치 (@google/gemini-cli@latest)" bun install -g "@google/gemini-cli@latest"
       fi
@@ -606,8 +633,14 @@ dev-up() {
     if _has npm; then
       local npm_before npm_after
       npm_before=$(_ver1 npm -v)
-      if ! _run "npm 자체 업데이트" npm install -g npm@latest --no-fund --no-audit; then
-        printf "    💡 Windows에서 npm 업데이트 실패 시: npm-windows-upgrade 사용 권장\n"
+      if _npm_self_update_due; then
+        if _run "npm 자체 업데이트 (3일 주기)" npm install -g npm@latest --no-fund --no-audit; then
+          _npm_self_update_stamp
+        else
+          printf "    💡 Windows에서 npm 업데이트 실패 시: npm-windows-upgrade 사용 권장\n"
+        fi
+      else
+        _skip "npm 자체 업데이트 (3일 주기 미도래)"
       fi
       npm_after=$(_ver1 npm -v)
       _record_change "[tool]" "npm" "$npm_before" "$npm_after"

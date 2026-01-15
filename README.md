@@ -8,17 +8,17 @@ dev-up 한 줄로 업데이트 체인을 굴리고, 마지막에 성공 실패�
 * 설치된 도구만 자동 감지해서, 있는 것만 업데이트합니다
 * 작업별 소요 시간과 성공 실패를 요약합니다
 * 이번 실행에서 버전이 바뀐 항목만 따로 모아서 보여줍니다
-* 전역 패키지 변경도 요약에 포함합니다 (기본 활성화)
+* 전역 패키지 변경 요약은 기본 비활성화 (필요 시 DEV_UP_SUMMARY_GLOBALS=1)
 
 업데이트 대상 요약
 
 * Bun
   * bun upgrade
   * bun update -g
-  * codex, gemini-cli 최신 보장 설치
+  * codex, gemini-cli는 미설치 시만 설치
   * bun 전역 postinstall 차단 감지 후 allowlist 방식 trust
 * Node.js
-  * npm 자체 업데이트
+  * npm 자체 업데이트 (3일 주기)
   * npm 전역 업데이트는 7일에 한 번만 자동 실행
   * Corepack으로 pnpm 최신 활성화 (`corepack prepare pnpm@latest --activate`)
   * pnpm 전역 패키지 업데이트
@@ -45,6 +45,7 @@ dev-up 한 줄로 업데이트 체인을 굴리고, 마지막에 성공 실패�
 * node-pty는 자동 trust에서 제외합니다
 * uv는 설치 방식이 섞였을 때를 대비해 업그레이드 경로를 분기합니다
 * npm 전역 업데이트는 무거워서 7일 주기로 제한합니다
+* npm 자체 업데이트도 3일 주기로 제한합니다
 
 ## 설치 및 적용 방법
 
@@ -70,12 +71,17 @@ source ~/.bashrc
 dev-up
 ```
 
-## codex, gemini-cli 최신 보장 동작
+## codex, gemini-cli 설치 동작
 
-* npm이 있으면 npm view로 최신 버전 번호를 조회합니다
-* 이미 같은 버전이 설치되어 있으면 설치를 건너뜁니다
-* npm이 없거나 조회가 실패하면 latest로 설치합니다
-* 정말 재설치를 강제로 하고 싶을 때만 옵션으로 force를 켤 수 있습니다
+* bun update -g 단계에서 최신 업데이트를 처리합니다
+* 이미 설치되어 있으면 추가 설치/재설치를 하지 않습니다
+* 미설치일 때만 latest로 설치합니다
+* 강제 재설치가 필요하면 수동으로 실행합니다
+
+```bash
+bun install -g @openai/codex@latest
+bun install -g @google/gemini-cli@latest
+```
 
 ## 옵션 환경변수
 
@@ -96,12 +102,28 @@ DEV_UP_NPM_GLOBAL_FORCE=1 dev-up
 DEV_UP_NPM_GLOBAL_INTERVAL_DAYS=3 dev-up
 ```
 
-### npm 전역 업데이트 상태 파일
+### npm 자체 업데이트 주기
+
+* 기본 동작: 3일에 한 번만 npm 자체 업데이트 실행
+* 지금 바로 강제 실행
+
+```bash
+DEV_UP_NPM_SELF_FORCE=1 dev-up
+```
+
+* 주기 변경
+
+```bash
+DEV_UP_NPM_SELF_INTERVAL_DAYS=7 dev-up
+```
+
+### npm 업데이트 상태 파일
 
 주기 관리는 로컬 상태 파일로 기록됩니다.
 
 * 기본 폴더: HOME/.cache/dev-up
 * 기본 파일: HOME/.cache/dev-up/npm-global-update.ts
+* npm 자체 업데이트 파일: HOME/.cache/dev-up/npm-self-update.ts
 * 이 파일을 삭제하면 다음 실행에서 npm 전역 업데이트가 다시 실행됩니다
 * 상태 폴더를 바꾸고 싶으면
 
@@ -111,13 +133,13 @@ DEV_UP_STATE_DIR="$HOME/.cache/my-dev-up" dev-up
 
 ### 전역 패키지 변경 요약
 
-기본적으로 bun/pnpm/npm 전역 패키지와 uv tool 업데이트 결과를 요약에 포함합니다.
+기본적으로 전역 패키지 요약은 꺼져 있습니다.
 전역 패키지 수가 많으면 약간 느려질 수 있습니다.
 
-* 끄기
+* 켜기
 
 ```bash
-DEV_UP_SUMMARY_GLOBALS=0 dev-up
+DEV_UP_SUMMARY_GLOBALS=1 dev-up
 ```
 
 ### Corepack enable 권한 문제 우회
@@ -155,14 +177,6 @@ DEV_UP_BUN_FORCE_LATEST_ALL=1 DEV_UP_BUN_FORCE_LATEST_COLD=1 dev-up
 DEV_UP_BUN_FORCE_LATEST_ALL=1 DEV_UP_BUN_FORCE_LATEST_NPM=1 dev-up
 ```
 
-### codex, gemini-cli 재설치 강제
-
-이미 최신이어도 다시 설치하고 싶을 때만 사용합니다.
-
-```bash
-DEV_UP_BUN_FORCE_REINSTALL=1 dev-up
-```
-
 ## npm 전역 업데이트가 느린 이유
 
 npm update -g는 전역 패키지 수가 많을수록 매우 무거워집니다.
@@ -177,17 +191,17 @@ npm update -g는 전역 패키지 수가 많을수록 매우 무거워집니다.
 ==> Bun 글로벌 패키지 업데이트
   ✓ Bun 글로벌 패키지 업데이트
 
-==> Codex CLI 최신 확인 (이미 0.69.0)
-  ✓ Codex CLI 최신 확인 (이미 0.69.0)
+==> Codex CLI 설치됨 (0.69.0)
+  ✓ Codex CLI 설치됨 (0.69.0)
 
-==> Gemini CLI 설치 (@google/gemini-cli@0.4.2)
-  ✓ Gemini CLI 설치 (@google/gemini-cli@0.4.2)
+==> Gemini CLI 설치됨 (0.4.2)
+  ✓ Gemini CLI 설치됨 (0.4.2)
 
 ⏱️ 작업별 소요 시간 요약
   ✓ Bun 런타임 업그레이드: 1s
   ✓ Bun 글로벌 패키지 업데이트: 4s
-  ✓ Codex CLI 최신 확인 (이미 0.69.0): 0s
-  ✓ Gemini CLI 설치 (@google/gemini-cli@0.4.2): 2s
+  ✓ Codex CLI 설치됨 (0.69.0): 0s
+  ✓ Gemini CLI 설치됨 (0.4.2): 0s
 
 ✅ 모든 작업 완료! (총 소요 시간: 12초)
 
@@ -219,7 +233,7 @@ npm update -g는 전역 패키지 수가 많을수록 매우 무거워집니다.
 
 ## bun allowlist 규칙
 
-Dev-Up은 bun pm ls -g 결과를 보고 allowlist를 구성합니다.
+Dev-Up은 bun 전역에 wrangler/vercel이 설치되어 있을 때 allowlist 기반 trust를 시도합니다.
 
 * wrangler 전역 사용 시: esbuild, workerd trust 후보에 포함
 * vercel 전역 사용 시: esbuild, sharp trust 후보에 포함
