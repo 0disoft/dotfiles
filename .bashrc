@@ -139,6 +139,42 @@ dev-up() {
       fi
     }
 
+    _npm_global_node_modules() {
+      _has npm || return 0
+      npm root -g 2>/dev/null | tr -d '\r' | head -n 1
+    }
+
+    _npm_cleanup_invalid_package_dirs() {
+      local nm d base parent cleaned=0
+      nm=$(_npm_global_node_modules)
+      [ -d "$nm" ] || { printf '0'; return 0; }
+
+      # npm install/update 중단 시 남는 고아 폴더 정리
+      # 예: <node_modules>/@scope/.pkg-rand, <node_modules>/.pkg-rand
+      while IFS= read -r d; do
+        [ -n "$d" ] || continue
+        base=$(basename "$d")
+        parent=$(basename "$(dirname "$d")")
+        if [[ "$base" == .* ]] && [[ "$parent" == @* ]]; then
+          if rm -rf "$d" 2>/dev/null; then
+            cleaned=$((cleaned + 1))
+          fi
+        fi
+      done < <(find "$nm" -mindepth 2 -maxdepth 2 -type d -print 2>/dev/null)
+
+      while IFS= read -r d; do
+        [ -n "$d" ] || continue
+        base=$(basename "$d")
+        if [[ "$base" == .* ]] && [ "$base" != ".bin" ]; then
+          if rm -rf "$d" 2>/dev/null; then
+            cleaned=$((cleaned + 1))
+          fi
+        fi
+      done < <(find "$nm" -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null)
+
+      printf '%s' "$cleaned"
+    }
+
     _bun_global_node_modules() {
       local bin_g
       bin_g=$(bun pm bin -g 2>/dev/null | tr -d '\r\n' || true)
@@ -383,6 +419,86 @@ dev-up() {
       fi
     }
 
+    _run_flutter_upgrade() {
+      local title="Flutter SDK 업그레이드"
+      _log "$title"
+      local start_time end_time duration output rc cmd
+      start_time=$(date +%s)
+
+      cmd=(flutter upgrade)
+      if [ "${DEV_UP_FLUTTER_FORCE:-0}" -eq 1 ]; then
+        cmd=(flutter upgrade --force)
+      fi
+
+      output=$("${cmd[@]}" 2>&1)
+      rc=$?
+      [ -n "$output" ] && printf "%s\n" "$output"
+
+      if [ "$rc" -eq 0 ]; then
+        end_time=$(date +%s)
+        duration=$((end_time - start_time))
+        _ok "$title" "$duration"
+        return 0
+      fi
+
+      if printf '%s\n' "$output" | tr -d '\r' | grep -Eq "checkout has local changes that would be erased by upgrading"; then
+        _skip "${title} (로컬 변경 감지: stash/commit 또는 DEV_UP_FLUTTER_FORCE=1)"
+        return 0
+      fi
+
+      end_time=$(date +%s)
+      duration=$((end_time - start_time))
+      _fail "$title" "$duration"
+      overall_rc=1
+      return 1
+    }
+
+    _run_npm_global_update() {
+      local title="npm 글로벌 패키지 업데이트 (7일 주기)"
+      local start_time end_time duration output rc cleaned
+      start_time=$(date +%s)
+      _log "$title"
+
+      cleaned=$(_npm_cleanup_invalid_package_dirs)
+      if [ "${cleaned:-0}" -gt 0 ]; then
+        printf "    💡 npm 전역 고아 디렉터리 %s개 정리 후 진행합니다.\n" "$cleaned"
+      fi
+
+      output=$(npm update -g --no-fund --no-audit 2>&1)
+      rc=$?
+      [ -n "$output" ] && printf "%s\n" "$output"
+
+      if [ "$rc" -eq 0 ]; then
+        end_time=$(date +%s)
+        duration=$((end_time - start_time))
+        _ok "$title" "$duration"
+        return 0
+      fi
+
+      # 정리 타이밍 이슈로 같은 오류가 남으면 1회 재정리 후 재시도
+      if printf '%s\n' "$output" | tr -d '\r' | grep -Eq "EINVALIDPACKAGENAME|name cannot start with a period"; then
+        cleaned=$(_npm_cleanup_invalid_package_dirs)
+        if [ "${cleaned:-0}" -gt 0 ]; then
+          printf "    💡 npm 전역 고아 디렉터리 추가 정리 %s개 후 재시도합니다.\n" "$cleaned"
+          output=$(npm update -g --no-fund --no-audit 2>&1)
+          rc=$?
+          [ -n "$output" ] && printf "%s\n" "$output"
+          if [ "$rc" -eq 0 ]; then
+            end_time=$(date +%s)
+            duration=$((end_time - start_time))
+            _ok "${title} (정리 후 재시도)" "$duration"
+            return 0
+          fi
+        fi
+      fi
+
+      end_time=$(date +%s)
+      duration=$((end_time - start_time))
+      _fail "$title" "$duration"
+      overall_rc=1
+      return 1
+    }
+
     _run_corepack_enable_pnpm() {
       local title="Corepack enable pnpm"
       _log "$title"
@@ -575,7 +691,7 @@ dev-up() {
     if _has flutter; then
       local flutter_before flutter_after
       flutter_before=$(_ver1 flutter --version)
-      _run "Flutter SDK 업그레이드" flutter upgrade
+      _run_flutter_upgrade
       flutter_after=$(_ver1 flutter --version)
       _record_change "[tool]" "flutter" "$flutter_before" "$flutter_after"
     else
@@ -654,7 +770,7 @@ dev-up() {
           _npm_snapshot_globals "$npm_pkgs_before"
         fi
 
-        if _run "npm 글로벌 패키지 업데이트 (7일 주기)" npm update -g --no-fund --no-audit; then
+        if _run_npm_global_update; then
           _npm_global_update_stamp
         fi
 
